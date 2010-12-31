@@ -55,7 +55,7 @@ int main(int argc,char **argv)
     struct ifreq ifr;
     struct pollfd pollfd[2];
     int tunnelid;
-    char devname[256];
+    char devname[IFNAMSIZ];
 
     printf("Mikrotik EoIP %s\n",VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
@@ -99,7 +99,7 @@ int main(int argc,char **argv)
 	perror("ioctlg-1");
 	exit(-1);
     }
-    strncpy(devname,ifr.ifr_name,256);
+    strncpy(devname,ifr.ifr_name,IFNAMSIZ);
 
 
     ifr.ifr_flags |= IFF_UP;
