@@ -89,7 +89,7 @@ int main(int argc,char **argv)
 
     memset(&ifr, 0, sizeof(ifr));
     ifr.ifr_flags = IFF_TAP|IFF_NO_PI;
-    strncpy(ifr.ifr_name, "v%d",IFNAMSIZ);
+    strncpy(ifr.ifr_name, "eoip%d",IFNAMSIZ);
     if (ioctl(fd, TUNSETIFF, (void *)&ifr) < 0) {
 	perror("ioctl-1");
 	exit(-1);
