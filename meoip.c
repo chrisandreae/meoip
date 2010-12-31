@@ -85,7 +85,7 @@ int main(int argc,char **argv)
 
     /* Tun */
     if ( (fd = open("/dev/net/tun",O_RDWR)) < 0) 
-	perror("open");
+	perror("open /dev/net/tun");
 
     memset(&ifr, 0, sizeof(ifr));
     ifr.ifr_flags = IFF_TAP|IFF_NO_PI;
