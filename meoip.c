@@ -264,6 +264,8 @@ int main(int argc,char **argv)
 	perror("raw socket error():");
 	exit(-1);
     }
+    fcntl(raw_socket, F_SETFL, O_NONBLOCK);
+
 
     bzero(ip,20);
 
@@ -309,7 +311,7 @@ int main(int argc,char **argv)
     for(i=0;i<numtunnels;i++)
     {
       tunnel=tunnels + i;
-      
+      fcntl(tunnel->fd, F_SETFL, O_NONBLOCK);
       pollfd[i+1].fd = tunnel->fd;
       pollfd[i+1].events = POLLIN;
       pollfd[i+1].revents = 0; /* unneccesary? */
