@@ -243,6 +243,8 @@ int main(int argc,char **argv)
 	tunnel->daddr.sin_port = 0;
 	if (ini_gets(section,"dst","0.0.0.0",strbuf,sizeof(strbuf),argv[1]) < 1) {
 	    printf("Destination for %s not correct\n",section);
+	} else {
+	    printf("Destination for %s: %s\n",section,strbuf);
 	}
 
     	if (!inet_pton(AF_INET, strbuf, (struct in_addr *)&tunnel->daddr.sin_addr.s_addr))
@@ -269,7 +271,6 @@ int main(int argc,char **argv)
 
     bzero(ip,20);
 
-    daemon(0,1);
 
     for(i=0;i<numtunnels;i++)
     {
@@ -284,7 +285,10 @@ int main(int argc,char **argv)
     sa.sa_handler = term_handler;
     sigaction( SIGTERM , &sa, 0);
     sigaction( SIGINT , &sa, 0);
-    sleep(100);
+
+    /* Fork after creating tunnels, useful for scripts */
+    daemon(0,1);
+
 
     /* structure of Mikrotik EoIP:
 	... IP header ...
