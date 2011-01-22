@@ -1,10 +1,10 @@
 VERSION=0.2
 
 DEBUG=-g
-CFLAGS=-DVERSION=\"${VERSION}\" -Wall $(DEBUG) -O0
+CFLAGS=-DVERSION=\"${VERSION}\" -Wall $(DEBUG) -Werror -O0
 LDFLAGS=$(DEBUG)
 
-OBJS=meoip.o
+OBJS=meoip.o minIni.o
 
 all: meoip
 

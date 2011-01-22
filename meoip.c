@@ -49,6 +49,8 @@
 #include <err.h>
 #include <signal.h>
 
+#include "minIni.h"
+
 #define MAXPAYLOAD (65536)
 #define TUN_MAX_TRY 50
 
@@ -57,7 +59,7 @@
 if  (x == NULL) \
   { warn("%s:%d %s: %m", __FILE__, __LINE__, f); exit(1);}
 
-
+#define sizearray(a)  (sizeof(a) / sizeof((a)[0]))
 
 typedef struct
 {
@@ -65,6 +67,7 @@ typedef struct
    int                  id;
    int                  fd;
    struct ifreq		ifr;
+   char 		name[65];
 }  Tunnel;
 
 int numtunnels;
@@ -116,7 +119,11 @@ int open_tun(Tunnel *tunnel)
     bzero(&tunnel->ifr, sizeof(tunnel->ifr));
 
     tunnel->ifr.ifr_flags = IFF_TAP|IFF_NO_PI;
-    strncpy(tunnel->ifr.ifr_name, "eoip%d",IFNAMSIZ);
+    if (tunnel->name[0] != 0)
+	strncpy(tunnel->ifr.ifr_name, tunnel->name,IFNAMSIZ);
+    else
+	strncpy(tunnel->ifr.ifr_name, "eoip%d",IFNAMSIZ);
+
     if (ioctl(tunnel->fd, TUNSETIFF, (void *)&tunnel->ifr) < 0) {
         perror("ioctl-1");
         close(fd);
@@ -191,81 +198,74 @@ int main(int argc,char **argv)
     unsigned char *rcv = malloc(MAXPAYLOAD+28); /* Header on receive is larger */
     struct sockaddr_in daddr;
     unsigned char *payloadptr = ip+8;
-    int ret, i;
+    int ret, i, sn;
     struct pollfd pollfd[argc-1];
     Tunnel *tunnel;
     struct sigaction sa;
+    struct stat mystat;
+    char section[IFNAMSIZ];
+    char strbuf[256];
 
     printf("Mikrotik EoIP %s\n",VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
 
-    if(argc < 2 || argc > TUN_MAX_TRY ){
-        fprintf(stdout,"Usage: %s peerip/tunnelid ...\n",argv[0]);
+    if(argc != 2){
+        fprintf(stdout,"Usage: %s configfile\n",argv[0]);
         return 0;
     }
 
-    numtunnels=argc-1;
+    if (stat(argv[1],&mystat)) {
+	perror("Config file error");
+	/* TODO: Check readability */
+	exit(-1);
+    }
+
+    for (sn = 0; ini_getsection(sn, section, sizearray(section), argv[1]) > 0; sn++) {
+	numtunnels++;
+     }
+
     tunnels = malloc(sizeof(Tunnel)*numtunnels);
     assert(tunnels, "malloc()");
-    bzero(tunnels,sizeof(Tunnel)*numtunnels);
+    memset(tunnels,0x0,sizeof(Tunnel)*numtunnels);
 
-    {
+    for (sn = 0; ini_getsection(sn, section, sizearray(section), argv[1]) > 0; sn++) {
+	tunnel = tunnels + sn;
+	printf("Creating tunnel: %s num %d\n", section,sn);
+
+	if (strlen(section)>64) {
+	    printf("Name of tunnel need to be shorter than 64 symbols\n");
+	    exit(-1);
+	}
+	strncpy(tunnel->name,section,64);
 
 
-    for(i=0;i<numtunnels;i++)
-    {
-      int strln, arg_position=0, j;
-      char *s;
-      j=0;
-      tunnel = tunnels + i;
-      strln = strlen(argv[i+1]) + 1;
-      s = argv[i+1];
-      for(j=0;j<strln;j++)
-      {
-        if ( *(argv[i+1]+j) == '/' || *(argv[i+1]+j) == 0x00)
-        {
-          *(argv[i+1]+j) = 0x0;
-          arg_position++;
-          switch (arg_position)
-          {
-            case 1:
-              tunnel->daddr.sin_family = AF_INET;
-              tunnel->daddr.sin_port = 0;
-    	      if (!inet_pton(AF_INET, s, (struct in_addr *)&tunnel->daddr.sin_addr.s_addr))
-	      {
-	        warn("Destination \"%s\" is not correct\n", s);
-	        exit(-1);
-	      }
-	      bzero(tunnel->daddr.sin_zero, sizeof(tunnel->daddr.sin_zero));
-              s = argv[i+1]+j+1;
-            break;
-            case 2:
-	      tunnel->id = atoi(s);
-	      if ( !tunnel->id )
-	      {
-                warn("Tunnel id \"%s\" is not correct\n", s);
-                exit(-1);
-	      }
-              s = argv[i+1]+j+1;
-            break;
-          }
-        }
-      }
-      if (arg_position!=2)
-      {
-        fprintf(stdout,"Usage: %s peerip/tunnelid ...\n",argv[0]);
-        exit(-1);
-      }
-    }
+	tunnel->daddr.sin_family = AF_INET;
+	tunnel->daddr.sin_port = 0;
+	if (ini_gets(section,"dst","0.0.0.0",strbuf,sizeof(strbuf),argv[1]) < 1) {
+	    printf("Destination for %s not correct\n",section);
+	}
 
-    }
+    	if (!inet_pton(AF_INET, strbuf, (struct in_addr *)&tunnel->daddr.sin_addr.s_addr))
+	{
+	    warn("Destination \"%s\" is not correct\n", strbuf);
+	    exit(-1);
+	}
+	bzero(tunnel->daddr.sin_zero, sizeof(tunnel->daddr.sin_zero));
+	tunnel->id = (int)ini_getl(section,"id",0,argv[1]);
+	/* TODO: What is max value of tunnel? */
+	if (tunnel->id == 0 || tunnel->id > 65536) {
+	    warn("ID of \"%d\" is not correct\n", tunnel->id);
+	    exit(-1);
+	}
+
+     }
+    
 
     if (raw_socket == -1) {
 	perror("raw socket error():");
 	exit(-1);
     }
     fcntl(raw_socket, F_SETFL, O_NONBLOCK);
-
 
     bzero(ip,20);
 
@@ -319,15 +319,14 @@ int main(int argc,char **argv)
 
     while ((ret = poll(pollfd,numtunnels+1,-1)) >= 0) {
 	if (pollfd[0].revents) {
-	    /* TODO: verify tunnel id */
 	    payloadsz = read(raw_socket,rcv,MAXPAYLOAD);
 	    if (payloadsz < 28)
 		continue;
 
+	    /* TODO: Optimize search of tunnel id */
             for(i=0;i<numtunnels;i++)
             {
 	      tunnel=tunnels + i;
-              /* TODO: verify tunnel id */
               if (rcv[26] == (unsigned char )(tunnel->id & 0xFF) && rcv[27] == (unsigned char )(((tunnel->id & 0xFF00) >> 8)))
 	      {
 		if (payloadsz<0)
