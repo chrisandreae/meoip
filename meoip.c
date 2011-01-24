@@ -51,8 +51,14 @@
 
 #include "minIni.h"
 
-#define MAXPAYLOAD (65536)
-#define TUN_MAX_TRY 50
+/* In theory maximum payload that can be handled is 65536, but if we use vectorized
+   code with preallocated buffers - it is waste of space, especially for embedded setup.
+   So if you want oversized packets - increase MAXPAYLOAD up to 65536 (or a bit less)
+   If you choice performance - more vectors, to avoid expensive context switches
+*/
+
+#define MAXPAYLOAD (2048)
+#define PREALLOCBUF 32
 
 /*! Assert*/
 #define assert(x, f) \
@@ -319,10 +325,6 @@ int main(int argc,char **argv)
     ip[1] = 0x01;
     ip[2] = 0x64;
     ip[3] = 0x00;
-
-    //ip[6] = 0xd2;
-    //ip[7] = 0x04;
-
 
 
     pollfd[0].fd = raw_socket;
