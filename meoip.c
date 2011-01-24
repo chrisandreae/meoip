@@ -209,10 +209,27 @@ int main(int argc,char **argv)
     printf("Mikrotik EoIP %s\n",VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
 
-    if(argc != 2){
-        fprintf(stdout,"Usage: %s configfile\n",argv[0]);
+    if(argc != 2 && argc != 3){
+        fprintf(stdout,"Usage: %s configfile [bindip]\n",argv[0]);
         return 0;
     }
+
+    if (argc == 3) {
+	struct sockaddr_in serv_addr;
+	serv_addr.sin_family = AF_INET;
+	if (!inet_pton(AF_INET, argv[2], (struct in_addr *)&serv_addr.sin_addr.s_addr)) {
+	    perror("bind address invalid");
+	    exit(-1);
+	}
+	serv_addr.sin_port = 0;
+	if (bind(raw_socket, (struct sockaddr *) &serv_addr,
+		sizeof(serv_addr)) < 0)
+	{
+	    perror("bind error");
+	    exit(-1);
+	}
+    }
+
 
     if (stat(argv[1],&mystat)) {
 	perror("Config file error");
