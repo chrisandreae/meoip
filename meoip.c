@@ -374,12 +374,12 @@ int main(int argc,char **argv)
 	    payloadsz = read(tunnel->fd,payloadptr,MAXPAYLOAD);
 	    if (payloadsz < 0)
 		break;
-	    ip[4] = (unsigned char)(payloadsz & 0xFF00) << 8;
+	    ip[4] = (unsigned char)((payloadsz & 0xFF00) >> 8);
 	    ip[5] = (unsigned char)(payloadsz & 0xFF);
 
 	    // tunnel id
 	    ip[6] = (unsigned char )(tunnel->id & 0xFF);
-	    ip[7] = (unsigned char )(((tunnel->id & 0xFF00) >> 8));
+	    ip[7] = (unsigned char )((tunnel->id & 0xFF00) >> 8);
 
 	    if(sendto(raw_socket, ip, payloadsz+8, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
 		perror("send() err");
