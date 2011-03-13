@@ -213,14 +213,17 @@ int main(int argc,char **argv)
     struct stat mystat;
     char section[IFNAMSIZ];
     char strbuf[256];
+    char *configname;
+    char defaultcfgname[] = "/etc/meoip.cfg";
 
     printf("Mikrotik EoIP %s\n",VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
+    printf("Tip: %s [configfile [bindip]]\n",argv[0]);
 
-    if(argc != 2 && argc != 3){
-        fprintf(stdout,"Usage: %s configfile [bindip]\n",argv[0]);
-        return 0;
-    }
+//    if(argc > 3){
+//        fprintf(stdout,"Usage: %s configfile [bindip]\n",argv[0]);
+//        return 0;
+//    }
 
     if (argc == 3) {
 	struct sockaddr_in serv_addr;
@@ -238,14 +241,19 @@ int main(int argc,char **argv)
 	}
     }
 
-
-    if (stat(argv[1],&mystat)) {
-	perror("Config file error");
-	/* TODO: Check readability */
-	exit(-1);
+    if (argc == 1) {
+	configname = defaultcfgname;
+    } else {
+	configname = argv[1];
     }
 
-    for (sn = 0; ini_getsection(sn, section, sizearray(section), argv[1]) > 0; sn++) {
+    if (stat(configname,&mystat)) {
+	    perror("Config file error");
+	    /* TODO: Check readability */
+	    exit(-1);
+    }
+
+    for (sn = 0; ini_getsection(sn, section, sizearray(section), configname) > 0; sn++) {
 	numtunnels++;
      }
 
@@ -253,7 +261,7 @@ int main(int argc,char **argv)
     assert(tunnels, "malloc()");
     memset(tunnels,0x0,sizeof(Tunnel)*numtunnels);
 
-    for (sn = 0; ini_getsection(sn, section, sizearray(section), argv[1]) > 0; sn++) {
+    for (sn = 0; ini_getsection(sn, section, sizearray(section), configname) > 0; sn++) {
 	tunnel = tunnels + sn;
 	printf("Creating tunnel: %s num %d\n", section,sn);
 
@@ -266,7 +274,7 @@ int main(int argc,char **argv)
 
 	tunnel->daddr.sin_family = AF_INET;
 	tunnel->daddr.sin_port = 0;
-	if (ini_gets(section,"dst","0.0.0.0",strbuf,sizeof(strbuf),argv[1]) < 1) {
+	if (ini_gets(section,"dst","0.0.0.0",strbuf,sizeof(strbuf),configname) < 1) {
 	    printf("Destination for %s not correct\n",section);
 	} else {
 	    printf("Destination for %s: %s\n",section,strbuf);
@@ -278,7 +286,7 @@ int main(int argc,char **argv)
 	    exit(-1);
 	}
 	bzero(tunnel->daddr.sin_zero, sizeof(tunnel->daddr.sin_zero));
-	tunnel->id = (int)ini_getl(section,"id",0,argv[1]);
+	tunnel->id = (int)ini_getl(section,"id",0,configname);
 	/* TODO: What is max value of tunnel? */
 	if (tunnel->id == 0 || tunnel->id > 65536) {
 	    warn("ID of \"%d\" is not correct\n", tunnel->id);
