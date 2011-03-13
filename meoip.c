@@ -18,7 +18,6 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.*
 */
 
-#include <pcap.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -135,11 +134,14 @@ int open_tun(Tunnel *tunnel)
         close(fd);
         return 1;
     }
+
+/*
     if (ioctl(tunnel->fd, TUNGETIFF, (void *)&tunnel->ifr) < 0) {
         perror("ioctlg-1");
         close(fd);
         return 1;
     }
+*/
 
     tunnel->ifr.ifr_flags |= IFF_UP;
     tunnel->ifr.ifr_flags |= IFF_RUNNING;
