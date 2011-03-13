@@ -248,7 +248,9 @@ int main(int argc,char **argv)
     }
 
     if (stat(configname,&mystat)) {
-	    perror("Config file error");
+	    perror("config file error");
+	    printf("Filename: %s\n",configname);
+
 	    /* TODO: Check readability */
 	    exit(-1);
     }
