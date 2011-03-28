@@ -48,6 +48,7 @@
 #include <err.h>
 #include <signal.h>
 #include <assert.h>
+#include <pthread.h>
 #include "minIni.h"
 
 /* In theory maximum payload that can be handled is 65536, but if we use vectorized
@@ -71,9 +72,19 @@ typedef struct
    char 		name[65];
 }  Tunnel;
 
+struct thr_rx
+{
+    int raw_socket;
+};
+
+struct thr_tx
+{
+    int raw_socket;
+    Tunnel *tunnel;
+};
+
 int numtunnels;
 Tunnel *tunnels;
-
 
 void term_handler(int s)
 { 
@@ -194,33 +205,20 @@ int open_tun(Tunnel *tunnel)
 }
 #endif
 
-int main(int argc,char **argv)
+void *thr_rx(void *threadid)
 {
-    int raw_socket = socket(PF_INET, SOCK_RAW, 47);
-    int payloadsz;
-    unsigned char *ip = malloc(MAXPAYLOAD+8); /* 8-byte header of GRE, rest is payload */
-    struct sockaddr_in daddr;
-    unsigned char *payloadptr = ip+8;
-    int ret, i, sn;
-    struct pollfd pollfd[argc-1];
-    Tunnel *tunnel;
-    struct sigaction sa;
-    struct stat mystat;
-    char section[IFNAMSIZ];
-    char strbuf[256];
-    char *configname;
-    char defaultcfgname[] = "/etc/meoip.cfg";
-
-    char *rxringbufptr[MAXRINGBUF];
+    unsigned char *rxringbufptr[MAXRINGBUF];
     int rxringpayload[MAXRINGBUF];
-    char *rxringbuffer;
+    unsigned char *rxringbuffer;
     int rxringbufused = 0;
-    char *ptr;
-//    pthread_t threads[2];
+    unsigned char *ptr;
+    int i,ret;
+    struct thr_rx *thr_rx_data = (struct thr_rx*)threadid;
+    Tunnel *tunnel;
+    int raw_socket = thr_rx_data->raw_socket;
+    fd_set rfds;
+    
 
-    printf("Mikrotik EoIP %s\n",VERSION);
-    printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
-    printf("Tip: %s [configfile [bindip]]\n",argv[0]);
 
     rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
     if (!rxringbuffer) {
@@ -231,6 +229,116 @@ int main(int argc,char **argv)
     for (i=0;i<MAXRINGBUF;i++) {
 	rxringbufptr[i] = rxringbuffer+(MAXPAYLOAD*i);
     }
+
+    while(1) {
+
+           FD_ZERO(&rfds);
+           FD_SET(raw_socket, &rfds);
+           ret = select(raw_socket+1, &rfds, NULL, NULL, NULL);
+
+	    assert(rxringbufused == 0);
+	    while (rxringbufused < MAXRINGBUF) {
+		rxringpayload[rxringbufused] = read(raw_socket,rxringbufptr[rxringbufused],MAXPAYLOAD);
+		if (rxringpayload[rxringbufused] < 0)
+		    break;
+
+		if (rxringpayload[rxringbufused] >= 28)
+		    rxringbufused++;
+	    }
+
+	    if (!rxringbufused)
+		continue;
+
+	    do {
+		rxringbufused--;
+		ptr = rxringbufptr[rxringbufused];
+		ret = 0;
+		/* TODO: Optimize search of tunnel id */
+        	for(i=0;i<numtunnels;i++)
+        	{
+	    	    tunnel=tunnels + i;		    
+            	    if (ptr[26] == (unsigned char )(tunnel->id & 0xFF) && ptr[27] == (unsigned char )(((tunnel->id & 0xFF00) >> 8)))
+	    	    {
+			ret = write(tunnel->fd,ptr+28,rxringpayload[rxringbufused]-28);
+		        break;
+	    	    }
+		}
+		// debug
+		//if (ret == 0)
+		//    printf("Invalid ID received on gre\n");
+	    } while (rxringbufused);
+    }
+    return(NULL);    
+}
+
+void *thr_tx(void *threadid)
+{
+    struct thr_tx *thr_tx_data = (struct thr_tx*)threadid;
+    Tunnel *tunnel = thr_tx_data->tunnel;
+    int fd = tunnel->fd;
+    int raw_socket = thr_tx_data->raw_socket;
+    unsigned char *ip = malloc(MAXPAYLOAD+8); /* 8-byte header of GRE, rest is payload */
+    int payloadsz;
+    unsigned char *payloadptr = ip+8;
+    struct sockaddr_in daddr;
+    int ret;
+    fd_set rfds;
+
+    bzero(ip,20);
+
+    // GRE info?
+    ip[0] = 0x20;
+    ip[1] = 0x01;
+    ip[2] = 0x64;
+    ip[3] = 0x00;
+
+    while(1) {
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
+        ret = select(fd+1, &rfds, NULL, NULL, NULL);
+
+	payloadsz = read(fd,payloadptr,MAXPAYLOAD);
+	if (payloadsz < 0)
+	    continue;
+	ip[4] = (unsigned char)((payloadsz & 0xFF00) >> 8);
+	ip[5] = (unsigned char)(payloadsz & 0xFF);
+
+	// tunnel id
+	ip[6] = (unsigned char )(tunnel->id & 0xFF);
+	ip[7] = (unsigned char )((tunnel->id & 0xFF00) >> 8);
+
+	if(sendto(raw_socket, ip, payloadsz+8, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
+	    perror("send() err");
+    }
+    return(NULL);    
+}
+
+int main(int argc,char **argv)
+{
+    struct thr_rx thr_rx_data;
+    struct thr_tx *thr_tx_data;
+    
+
+    int ret, i, sn,rc;
+//    struct pollfd pollfd[argc-1];
+    Tunnel *tunnel;
+    struct sigaction sa;
+    struct stat mystat;
+    char section[IFNAMSIZ];
+    char strbuf[256];
+    char *configname;
+    char defaultcfgname[] = "/etc/meoip.cfg";
+    pthread_t *threads;
+    pthread_attr_t attr;
+    void *status;
+
+    printf("Mikrotik EoIP %s\n",VERSION);
+    printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
+    printf("Tip: %s [configfile [bindip]]\n",argv[0]);
+
+    thr_rx_data.raw_socket = socket(PF_INET, SOCK_RAW, 47);
+
+
     
     if (argc == 3) {
 	struct sockaddr_in serv_addr;
@@ -240,7 +348,7 @@ int main(int argc,char **argv)
 	    exit(-1);
 	}
 	serv_addr.sin_port = 0;
-	if (bind(raw_socket, (struct sockaddr *) &serv_addr,
+	if (bind(thr_rx_data.raw_socket, (struct sockaddr *) &serv_addr,
 		sizeof(serv_addr)) < 0)
 	{
 	    perror("bind error");
@@ -305,13 +413,12 @@ int main(int argc,char **argv)
      }
     
 
-    if (raw_socket == -1) {
+    if (thr_rx_data.raw_socket == -1) {
 	perror("raw socket error():");
 	exit(-1);
     }
-    fcntl(raw_socket, F_SETFL, O_NONBLOCK);
+    fcntl(thr_rx_data.raw_socket, F_SETFL, O_NONBLOCK);
 
-    bzero(ip,20);
 
 
     for(i=0;i<numtunnels;i++)
@@ -323,10 +430,13 @@ int main(int argc,char **argv)
       }
     }
 
+
     bzero(&sa, sizeof(sa));
     sa.sa_handler = term_handler;
     sigaction( SIGTERM , &sa, 0);
     sigaction( SIGINT , &sa, 0);
+
+    threads = malloc(sizeof(pthread_t)*(numtunnels+1));
 
     /* Fork after creating tunnels, useful for scripts */
     ret = daemon(1,1);
@@ -339,82 +449,23 @@ int main(int argc,char **argv)
     */
 
 
-    // GRE info?
-    ip[0] = 0x20;
-    ip[1] = 0x01;
-    ip[2] = 0x64;
-    ip[3] = 0x00;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 
-
-    pollfd[0].fd = raw_socket;
-    pollfd[0].events = POLLIN;
-    pollfd[0].revents = 0; /* unneccesary? */
+    rc = pthread_create(&threads[0], &attr, thr_rx, (void *)&thr_rx_data);
 
     for(i=0;i<numtunnels;i++)
     {
       tunnel=tunnels + i;
-      fcntl(tunnel->fd, F_SETFL, O_NONBLOCK);
-      pollfd[i+1].fd = tunnel->fd;
-      pollfd[i+1].events = POLLIN;
-      pollfd[i+1].revents = 0; /* unneccesary? */
+        fcntl(tunnel->fd, F_SETFL, O_NONBLOCK);
+	/* Allocate for each thread */
+	thr_tx_data = malloc(sizeof(struct thr_tx));
+        thr_tx_data->tunnel = tunnel;
+        thr_tx_data->raw_socket = thr_rx_data.raw_socket;
+        rc = pthread_create(&threads[0], &attr, thr_tx, (void *)thr_tx_data);
     }
 
-    while ((ret = poll(pollfd,numtunnels+1,-1)) >= 0) {
-	if (pollfd[0].revents) {
-	    assert(rxringbufused == 0);
-	    while (rxringbufused < MAXRINGBUF) {
-		rxringpayload[rxringbufused] = read(raw_socket,rxringbufptr[rxringbufused],MAXPAYLOAD);
-		if (rxringpayload[rxringbufused] < 0)
-		    break;
+    rc = pthread_join(threads[0], &status);
 
-		if (rxringpayload[rxringbufused] >= 28)
-		    rxringbufused++;
-	    }
-	    if (!rxringbufused)
-		break;
-
-	    do {
-		rxringbufused--;
-		ptr = rxringbufptr[rxringbufused];
-		/* TODO: Optimize search of tunnel id */
-        	for(i=0;i<numtunnels;i++)
-        	{
-	    	    tunnel=tunnels + i;		    
-            	    if (ptr[26] == (unsigned char )(tunnel->id & 0xFF) && ptr[27] == (unsigned char )(((tunnel->id & 0xFF00) >> 8)))
-	    	    {
-			if (rxringpayload[rxringbufused]>8) {
-			    ret = write(tunnel->fd,ptr+28,rxringpayload[rxringbufused]-28);
-			}
-		        break;
-	    	    }
-		}
-	    } while (rxringbufused);
-	}
-
-
-        for(i=0;i<numtunnels;i++)
-        {
-          tunnel=tunnels + i;
-
-	  if (pollfd[i+1].revents)
-	  {
-	    pollfd[i+1].revents=0;
-	    payloadsz = read(tunnel->fd,payloadptr,MAXPAYLOAD);
-	    if (payloadsz < 0)
-		break;
-	    ip[4] = (unsigned char)((payloadsz & 0xFF00) >> 8);
-	    ip[5] = (unsigned char)(payloadsz & 0xFF);
-
-	    // tunnel id
-	    ip[6] = (unsigned char )(tunnel->id & 0xFF);
-	    ip[7] = (unsigned char )((tunnel->id & 0xFF00) >> 8);
-
-	    if(sendto(raw_socket, ip, payloadsz+8, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
-		perror("send() err");
-	    break;
-	  }
-	}
-
-    }
     return(0);
 }
