@@ -1,8 +1,8 @@
-VERSION=0.2
+VERSION=0.3
 
 DEBUG=-g
-CFLAGS=-DVERSION=\"${VERSION}\" -Wall $(DEBUG) -Werror -O0
-LDFLAGS=$(DEBUG)
+CFLAGS=-DVERSION=\"${VERSION}\" -Wall $(DEBUG) -O3
+LDFLAGS=$(DEBUG) -lpthread
 
 OBJS=meoip.o minIni.o
 

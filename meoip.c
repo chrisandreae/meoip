@@ -47,7 +47,7 @@
 #include <unistd.h>
 #include <err.h>
 #include <signal.h>
-
+#include <assert.h>
 #include "minIni.h"
 
 /* In theory maximum payload that can be handled is 65536, but if we use vectorized
@@ -58,11 +58,7 @@
 
 #define MAXPAYLOAD (2048)
 #define PREALLOCBUF 32
-
-/*! Assert*/
-#define assert(x, f) \
-if  (x == NULL) \
-  { warn("%s:%d %s: %m", __FILE__, __LINE__, f); exit(1);}
+#define MAXRINGBUF  64
 
 #define sizearray(a)  (sizeof(a) / sizeof((a)[0]))
 
@@ -203,7 +199,6 @@ int main(int argc,char **argv)
     int raw_socket = socket(PF_INET, SOCK_RAW, 47);
     int payloadsz;
     unsigned char *ip = malloc(MAXPAYLOAD+8); /* 8-byte header of GRE, rest is payload */
-    unsigned char *rcv = malloc(MAXPAYLOAD+28); /* Header on receive is larger */
     struct sockaddr_in daddr;
     unsigned char *payloadptr = ip+8;
     int ret, i, sn;
@@ -216,15 +211,27 @@ int main(int argc,char **argv)
     char *configname;
     char defaultcfgname[] = "/etc/meoip.cfg";
 
+    char *rxringbufptr[MAXRINGBUF];
+    int rxringpayload[MAXRINGBUF];
+    char *rxringbuffer;
+    int rxringbufused = 0;
+    char *ptr;
+//    pthread_t threads[2];
+
     printf("Mikrotik EoIP %s\n",VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
     printf("Tip: %s [configfile [bindip]]\n",argv[0]);
 
-//    if(argc > 3){
-//        fprintf(stdout,"Usage: %s configfile [bindip]\n",argv[0]);
-//        return 0;
-//    }
-
+    rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
+    if (!rxringbuffer) {
+	perror("malloc()");
+	exit(1);
+    }
+    /* Temporary code*/
+    for (i=0;i<MAXRINGBUF;i++) {
+	rxringbufptr[i] = rxringbuffer+(MAXPAYLOAD*i);
+    }
+    
     if (argc == 3) {
 	struct sockaddr_in serv_addr;
 	serv_addr.sin_family = AF_INET;
@@ -260,7 +267,7 @@ int main(int argc,char **argv)
      }
 
     tunnels = malloc(sizeof(Tunnel)*numtunnels);
-    assert(tunnels, "malloc()");
+//    assert(tunnels, "malloc()");
     memset(tunnels,0x0,sizeof(Tunnel)*numtunnels);
 
     for (sn = 0; ini_getsection(sn, section, sizearray(section), configname) > 0; sn++) {
@@ -322,7 +329,7 @@ int main(int argc,char **argv)
     sigaction( SIGINT , &sa, 0);
 
     /* Fork after creating tunnels, useful for scripts */
-    daemon(0,1);
+    ret = daemon(1,1);
 
 
     /* structure of Mikrotik EoIP:
@@ -354,25 +361,34 @@ int main(int argc,char **argv)
 
     while ((ret = poll(pollfd,numtunnels+1,-1)) >= 0) {
 	if (pollfd[0].revents) {
-	    payloadsz = read(raw_socket,rcv,MAXPAYLOAD);
-	    if (payloadsz < 28)
-		continue;
-
-	    /* TODO: Optimize search of tunnel id */
-            for(i=0;i<numtunnels;i++)
-            {
-	      tunnel=tunnels + i;
-              if (rcv[26] == (unsigned char )(tunnel->id & 0xFF) && rcv[27] == (unsigned char )(((tunnel->id & 0xFF00) >> 8)))
-	      {
-		if (payloadsz<0)
+	    assert(rxringbufused == 0);
+	    while (rxringbufused < MAXRINGBUF) {
+		rxringpayload[rxringbufused] = read(raw_socket,rxringbufptr[rxringbufused],MAXPAYLOAD);
+		if (rxringpayload[rxringbufused] < 0)
 		    break;
-		if (payloadsz>8) {
-		    write(tunnel->fd,rcv+28,payloadsz-28);
-		}
-		break;
-	      }
+
+		if (rxringpayload[rxringbufused] >= 28)
+		    rxringbufused++;
 	    }
-	    continue;
+	    if (!rxringbufused)
+		break;
+
+	    do {
+		rxringbufused--;
+		ptr = rxringbufptr[rxringbufused];
+		/* TODO: Optimize search of tunnel id */
+        	for(i=0;i<numtunnels;i++)
+        	{
+	    	    tunnel=tunnels + i;		    
+            	    if (ptr[26] == (unsigned char )(tunnel->id & 0xFF) && ptr[27] == (unsigned char )(((tunnel->id & 0xFF00) >> 8)))
+	    	    {
+			if (rxringpayload[rxringbufused]>8) {
+			    ret = write(tunnel->fd,ptr+28,rxringpayload[rxringbufused]-28);
+			}
+		        break;
+	    	    }
+		}
+	    } while (rxringbufused);
 	}
 
 
