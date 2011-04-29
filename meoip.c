@@ -231,7 +231,7 @@ void *thr_rx(void *threadid)
     if (ret)
 	printf("Affinity error %d\n",ret);
     else
-	printf("TX thread set to cpu %d\n",cpu);
+	printf("RX thread set to cpu %d\n",cpu);
 
     rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
     if (!rxringbuffer) {
@@ -307,7 +307,7 @@ void *thr_tx(void *threadid)
     if (ret)
 	printf("Affinity error %d\n",ret);
     else
-	printf("TX thread set to cpu %d\n",cpu);
+	printf("TX thread(ID %d) set to cpu %d\n",tunnel->id,cpu);
 
     bzero(ip,20);
 
