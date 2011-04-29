@@ -222,14 +222,16 @@ void *thr_rx(void *threadid)
 
     cpu_set_t cpuset;
     pthread_t thread = pthread_self();;
-    int j=0;
+    int cpu=0;
 
     CPU_ZERO(&cpuset);
-    CPU_SET(j, &cpuset);
+    CPU_SET(cpu, &cpuset);
 
     ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
     if (ret)
 	printf("Affinity error %d\n",ret);
+    else
+	printf("TX thread set to cpu %d\n",cpu);
 
     rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
     if (!rxringbuffer) {
@@ -304,7 +306,8 @@ void *thr_tx(void *threadid)
     ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
     if (ret)
 	printf("Affinity error %d\n",ret);
-    /* Useless to check return */
+    else
+	printf("TX thread set to cpu %d\n",cpu);
 
     bzero(ip,20);
 
