@@ -355,6 +355,7 @@ int main(int argc,char **argv)
     pthread_t *threads;
     pthread_attr_t attr;
     void *status;
+    int optval=262144;
     
 
     printf("Mikrotik EoIP %s\n",VERSION);
@@ -362,7 +363,10 @@ int main(int argc,char **argv)
     printf("Tip: %s [configfile [bindip]]\n",argv[0]);
 
     thr_rx_data.raw_socket = socket(PF_INET, SOCK_RAW, 47);
-
+    if(setsockopt (thr_rx_data.raw_socket, SOL_SOCKET, SO_RCVBUF, &optval, sizeof (optval)))
+	perror("setsockopt(RCVBUF)");
+    if(setsockopt (thr_rx_data.raw_socket, SOL_SOCKET, SO_SNDBUF, &optval, sizeof (optval)))
+	perror("setsockopt(SNDBUF)");
 
     
     if (argc == 3) {
