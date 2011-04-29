@@ -227,8 +227,9 @@ void *thr_rx(void *threadid)
     CPU_ZERO(&cpuset);
     CPU_SET(j, &cpuset);
 
-    i = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-    /* Useless to check return */
+    ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+    if (ret)
+	printf("Affinity error %d\n",ret);
 
     rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
     if (!rxringbuffer) {
@@ -301,8 +302,9 @@ void *thr_tx(void *threadid)
     CPU_SET(cpu, &cpuset);
 
     ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+    if (ret)
+	printf("Affinity error %d\n",ret);
     /* Useless to check return */
-
 
     bzero(ip,20);
 
