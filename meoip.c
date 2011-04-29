@@ -221,7 +221,7 @@ void *thr_rx(void *threadid)
     fd_set rfds;
 
     cpu_set_t cpuset;
-    pthread_t thread = pthread_self();;
+    pthread_t thread = pthread_self();
     int cpu=0;
 
     CPU_ZERO(&cpuset);
@@ -298,7 +298,7 @@ void *thr_tx(void *threadid)
     int ret;
     fd_set rfds;
     cpu_set_t cpuset;
-    pthread_t thread = pthread_self();;
+    pthread_t thread = pthread_self();
 
     CPU_ZERO(&cpuset);
     CPU_SET(cpu, &cpuset);
