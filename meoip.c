@@ -17,7 +17,7 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.*
 */
-
+#define _GNU_SOURCE 
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -70,6 +70,7 @@ typedef struct
    int                  fd;
    struct ifreq		ifr;
    char 		name[65];
+   int			cpu;
 }  Tunnel;
 
 struct thr_rx
@@ -81,6 +82,7 @@ struct thr_tx
 {
     int raw_socket;
     Tunnel *tunnel;
+    int cpu;
 };
 
 int numtunnels;
@@ -217,8 +219,16 @@ void *thr_rx(void *threadid)
     Tunnel *tunnel;
     int raw_socket = thr_rx_data->raw_socket;
     fd_set rfds;
-    
 
+    cpu_set_t cpuset;
+    pthread_t thread = pthread_self();;
+    int j=0;
+
+    CPU_ZERO(&cpuset);
+    CPU_SET(j, &cpuset);
+
+    i = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+    /* Useless to check return */
 
     rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
     if (!rxringbuffer) {
@@ -275,6 +285,7 @@ void *thr_tx(void *threadid)
 {
     struct thr_tx *thr_tx_data = (struct thr_tx*)threadid;
     Tunnel *tunnel = thr_tx_data->tunnel;
+    int cpu = thr_tx_data->cpu;
     int fd = tunnel->fd;
     int raw_socket = thr_tx_data->raw_socket;
     unsigned char *ip = malloc(MAXPAYLOAD+8); /* 8-byte header of GRE, rest is payload */
@@ -283,6 +294,15 @@ void *thr_tx(void *threadid)
     struct sockaddr_in daddr;
     int ret;
     fd_set rfds;
+    cpu_set_t cpuset;
+    pthread_t thread = pthread_self();;
+
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu, &cpuset);
+
+    ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+    /* Useless to check return */
+
 
     bzero(ip,20);
 
@@ -317,7 +337,6 @@ int main(int argc,char **argv)
 {
     struct thr_rx thr_rx_data;
     struct thr_tx *thr_tx_data;
-    
 
     int ret, i, sn,rc;
 //    struct pollfd pollfd[argc-1];
@@ -331,6 +350,7 @@ int main(int argc,char **argv)
     pthread_t *threads;
     pthread_attr_t attr;
     void *status;
+    
 
     printf("Mikrotik EoIP %s\n",VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
@@ -461,6 +481,7 @@ int main(int argc,char **argv)
 	/* Allocate for each thread */
 	thr_tx_data = malloc(sizeof(struct thr_tx));
         thr_tx_data->tunnel = tunnel;
+	thr_tx_data->cpu = i+1;
         thr_tx_data->raw_socket = thr_rx_data.raw_socket;
         rc = pthread_create(&threads[0], &attr, thr_tx, (void *)thr_tx_data);
     }
