@@ -2,7 +2,7 @@ VERSION=0.3
 
 DEBUG=-g
 CFLAGS=-DVERSION=\"${VERSION}\" -Wall $(DEBUG) -O3
-LDFLAGS=$(DEBUG) -lpthread
+LDFLAGS=$(DEBUG) -lpthread -llzo2
 
 OBJS=meoip.o minIni.o
 OBJSVIP=vip.o minIni.o

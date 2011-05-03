@@ -46,6 +46,8 @@
 #include <assert.h>
 #include <pthread.h>
 #include "minIni.h"
+#include <lzo/lzo1x.h>
+
 
 /* In theory maximum payload that can be handled is 65536, but if we use vectorized
    code with preallocated buffers - it is waste of space, especially for embedded setup.
@@ -54,8 +56,16 @@
 */
 
 #define MAXPAYLOAD (2048)
-#define PREALLOCBUF 32
+#define MAXPACKED (1500-200)
+//#define MAXPACKED (1700)
+//#define PREALLOCBUF 32
 #define MAXRINGBUF  64
+
+#define BIT_COMPRESSED 		(1 << 0)
+#define BIT_PACKED 		(1 << 1)
+
+#define PACKINGDELAY 50
+
 
 #define sizearray(a)  (sizeof(a) / sizeof((a)[0]))
 
@@ -157,6 +167,12 @@ void *thr_rx(void *threadid)
     struct thr_rx *thr_rx_data = (struct thr_rx*)threadid;
     Tunnel *tunnel;
     int raw_socket = thr_rx_data->raw_socket;
+    unsigned char *decompressed = malloc(MAXPAYLOAD); /* 2-byte header of VIP, rest is payload */
+    unsigned int decompressedsz;
+    lzo_voidp wrkmem;
+
+//    unsigned int ctr_packed = 0,ctr_normal = 0;
+
     fd_set rfds;
 
     cpu_set_t cpuset;
@@ -171,6 +187,14 @@ void *thr_rx(void *threadid)
 	printf("Affinity error %d\n",ret);
     else
 	printf("RX thread set to cpu %d\n",cpu);
+
+    ret = lzo_init();    
+    if (ret != LZO_E_OK) {
+	printf("LZO init failed\n");
+	exit(1);
+    }
+    wrkmem = (lzo_voidp)malloc(LZO1X_1_MEM_COMPRESS);
+
 
     rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
     if (!rxringbuffer) {
@@ -211,13 +235,58 @@ void *thr_rx(void *threadid)
 	    	    tunnel=tunnels + i;		    
             	    if (ptr[20] == (unsigned char )(tunnel->id) )
 	    	    {
-			ret = write(tunnel->fd,ptr+22,rxringpayload[rxringbufused]-22);
+
+			if (ptr[21] & BIT_COMPRESSED) {
+			    decompressedsz = MAXPAYLOAD;
+			    lzo1x_decompress(ptr+22,rxringpayload[rxringbufused]-22,decompressed,(lzo_uintp)&decompressedsz,wrkmem);
+			    memcpy(ptr+22,decompressed,decompressedsz);
+			    rxringpayload[rxringbufused] = decompressedsz + 22;
+			}
+
+			if ((ptr[21] & BIT_PACKED)) {
+			    unsigned int offset = 22; /* 20 IP header + 2 byte of tunnel id and bitfield */
+			    unsigned short total;
+
+//			    ctr_packed++;				
+
+			    while(1) {
+				total = ntohs(*(uint16_t*)(ptr+offset+2));
+				if (offset+total>rxringpayload[rxringbufused]) {
+				    printf("invalid offset! %d > %d IP size %d\n",(offset+total),rxringpayload[rxringbufused],total);
+				    break;
+				}
+
+				ret = write(tunnel->fd,ptr+offset,total);
+				if (ret<0)
+				    printf("tunnel write error #1\n");
+
+//				ctr_normal++;
+				offset += total;
+				/* This is correct */
+				if (offset == rxringpayload[rxringbufused])
+				    break;
+				if (offset > rxringpayload[rxringbufused]) {
+				    printf("invalid offset! %d+%d > %d\n",offset,total,rxringpayload[rxringbufused]);
+				}
+			    }
+			} else {
+			    ret = write(tunnel->fd,ptr+22,rxringpayload[rxringbufused]-22);
+			    if (ret<0)
+			        printf("tunnel write error #2\n");
+
+//			    ctr_normal++;
+			}
 		        break;
 	    	    }
 		}
-		// debug
-		//if (ret == 0)
-		//    printf("Invalid ID received on gre\n");
+
+	// debug
+//	if (ctr_packed > 1000) {
+//	    printf("DEBUG: %d/%d packed\n",ctr_packed,ctr_normal);
+//	    ctr_packed = 0;
+//	    ctr_normal = 0;
+//	}
+
 	    } while (rxringbufused);
     }
     return(NULL);    
@@ -231,16 +300,36 @@ void *thr_tx(void *threadid)
     int fd = tunnel->fd;
     int raw_socket = thr_tx_data->raw_socket;
     unsigned char *ip = malloc(MAXPAYLOAD+2); /* 2-byte header of VIP, rest is payload */
-    int payloadsz;
     unsigned char *payloadptr = ip+2;
+
+    unsigned char *prevptr = malloc(MAXPAYLOAD); /* 2-byte header of VIP, rest is payload */
+    int prevavail = 0;
+
+    unsigned char *compressed = malloc(MAXPAYLOAD*2); /* 2-byte header of VIP, rest is payload */
+    lzo_voidp wrkmem;
+    int payloadsz;
+    unsigned int compressedsz;
+
     struct sockaddr_in daddr;
     int ret;
+
+//    unsigned int ctr_uncompressed = 0, ctr_compressed = 0, ctr_packed = 0, ctr_normal = 0;
+
     fd_set rfds;
     cpu_set_t cpuset;
     pthread_t thread = pthread_self();
 
+    struct timeval timeout;
+
     CPU_ZERO(&cpuset);
     CPU_SET(cpu, &cpuset);
+
+    ret = lzo_init();
+    if (ret != LZO_E_OK) {
+	printf("LZO init failed\n");
+	exit(1);
+    }
+    wrkmem = (lzo_voidp)malloc(LZO1X_1_MEM_COMPRESS);
 
     ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
     if (ret)
@@ -255,16 +344,74 @@ void *thr_tx(void *threadid)
         FD_SET(fd, &rfds);
         ret = select(fd+1, &rfds, NULL, NULL, NULL);
 
-	payloadsz = read(fd,payloadptr,MAXPAYLOAD);
-	if (payloadsz < 0)
-	    continue;
-
 	// tunnel id
-	ip[0] = (unsigned char )(tunnel->id & 0xFF);
-	ip[1] = 0; /* RESERVED BITFIELD */
+	ip[0] = (unsigned char )(tunnel->id & 0xFF);	
+	ip[1] = 0; 
+
+	if (!prevavail) {
+	    payloadsz = read(fd,payloadptr,MAXPAYLOAD);
+	    if (payloadsz < 0)
+		continue;
+//	    ctr_normal++;
+	    unsigned short total = ntohs(*(uint16_t*)(payloadptr+2));
+	    if (total != payloadsz)
+		printf("t %d p %d\n",total,payloadsz);
+
+	} else {
+	    payloadsz = prevavail;
+	    memcpy(payloadptr,prevptr,prevavail);
+	    prevavail = 0;
+	}
+	while(payloadsz < MAXPACKED) {
+	    /* try to get next packet */
+	    timeout.tv_sec = 0;
+	    timeout.tv_usec = PACKINGDELAY; /* ms*1000, 0.05ms */
+    	    FD_ZERO(&rfds);
+    	    FD_SET(fd, &rfds);
+    	    ret = select(fd+1, &rfds, NULL, NULL, &timeout);
+	    if (ret<=0)
+		break;
+
+	    prevavail = read(fd,prevptr,MAXPAYLOAD);
+	    if (prevavail < 0) {
+		prevavail = 0;
+		break;
+	    }
+//	    ctr_normal++;
+	    if (prevavail + payloadsz <= MAXPACKED) {
+		/* Still small, merge packets */
+		ip[1] |= BIT_PACKED;
+		memcpy(payloadptr+payloadsz,prevptr,prevavail);
+		payloadsz += prevavail;
+		prevavail = 0;
+	    } else {
+		/* This packet too big, send it alone */
+		break;
+	    }
+	}
+
+
+
+	
+#ifdef NOLZO
+	compressedsz = MAXPAYLOAD*2;
+#else
+	compressedsz = MAXPAYLOAD*2;
+	ret = lzo1x_1_compress(payloadptr,payloadsz,compressed,(lzo_uintp)&compressedsz,wrkmem);
+#endif
+
+	/* Adaptive compression */
+	if (compressedsz > payloadsz || compressedsz > MAXPAYLOAD) {
+	    compressedsz = 0;
+	} else {
+	    ip[1] |= BIT_COMPRESSED;
+	    memcpy(payloadptr,compressed,compressedsz);
+	    payloadsz = compressedsz;
+	}
 
 	if(sendto(raw_socket, ip, payloadsz+2, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
-	    perror("send() err");
+		perror("send() err");
+
     }
     return(NULL);    
 }
@@ -287,7 +434,8 @@ int main(int argc,char **argv)
     pthread_attr_t attr;
     void *status;
     int optval=262144;
-    
+
+    ret = lzo_init();    
 
     printf("Virtual IP %s\n",VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
@@ -400,13 +548,6 @@ int main(int argc,char **argv)
 
     /* Fork after creating tunnels, useful for scripts */
     ret = daemon(1,1);
-
-
-    /* structure of Mikrotik EoIP:
-	... IP header ...
-	4 byte - GRE info
-	2 byte - tunnel id
-    */
 
 
     pthread_attr_init(&attr);
