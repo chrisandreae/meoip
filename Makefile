@@ -5,10 +5,12 @@ CFLAGS=-DVERSION=\"${VERSION}\" -Wall $(DEBUG) -O3
 LDFLAGS=$(DEBUG) -lpthread
 
 OBJS=meoip.o minIni.o
+OBJSVIP=vip.o minIni.o
 
-all: meoip
+all: meoip vip
 
 meoip: $(OBJS)
+vip: $(OBJSVIP)
 
 install: meoip
 	cp meoip /usr/sbin
