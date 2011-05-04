@@ -65,7 +65,6 @@
 #define BIT_PACKED 		(1 << 1)
 #define BIT_XOR 		(1 << 2)
 
-#define PACKINGDELAY 50
 #define sizearray(a)  (sizeof(a) / sizeof((a)[0]))
 
 typedef struct
@@ -75,7 +74,7 @@ typedef struct
    int                  fd;
    struct ifreq		ifr;
    char 		name[65];
-   int			cpu;
+   struct thr_tx 	*thr_tx_data;
 }  Tunnel;
 
 struct thr_rx
@@ -88,6 +87,7 @@ struct thr_tx
     int raw_socket;
     Tunnel *tunnel;
     int cpu;
+    unsigned int		packdelay;
 };
 
 int numtunnels;
@@ -308,15 +308,13 @@ void *thr_tx(void *threadid)
     lzo_voidp wrkmem;
     int payloadsz;
     unsigned int compressedsz;
-
     struct sockaddr_in daddr;
     int ret;
 
 //    unsigned int ctr_uncompressed = 0, ctr_compressed = 0, ctr_packed = 0, ctr_normal = 0;
-
     fd_set rfds;
     struct timeval timeout;
-
+    unsigned int packdelay = thr_tx_data->packdelay;
 #ifndef __UCLIBC__
     int cpu = thr_tx_data->cpu;
     cpu_set_t cpuset;
@@ -366,10 +364,11 @@ void *thr_tx(void *threadid)
 	    memcpy(payloadptr,prevptr,prevavail);
 	    prevavail = 0;
 	}
+	timeout.tv_sec = 0;
+	timeout.tv_usec = packdelay; /* ms*1000, 0.05ms */
+
 	while(payloadsz < MAXPACKED) {
 	    /* try to get next packet */
-	    timeout.tv_sec = 0;
-	    timeout.tv_usec = PACKINGDELAY; /* ms*1000, 0.05ms */
     	    FD_ZERO(&rfds);
     	    FD_SET(fd, &rfds);
     	    ret = select(fd+1, &rfds, NULL, NULL, &timeout);
@@ -423,7 +422,7 @@ void *thr_tx(void *threadid)
 int main(int argc,char **argv)
 {
     struct thr_rx thr_rx_data;
-    struct thr_tx *thr_tx_data;
+//    struct thr_tx *thr_tx_data;
 
     int ret, i, sn,rc;
 //    struct pollfd pollfd[argc-1];
@@ -521,6 +520,13 @@ int main(int argc,char **argv)
 	    warn("ID of \"%d\" is not correct\n", tunnel->id);
 	    exit(-1);
 	}
+	/* Allocate for each thread */
+	tunnel->thr_tx_data = malloc(sizeof(struct thr_tx));
+        tunnel->thr_tx_data->tunnel = tunnel;
+	tunnel->thr_tx_data->cpu = sn+1;
+	tunnel->thr_tx_data->packdelay = (int)ini_getl(section,"delay",50,configname);;
+        tunnel->thr_tx_data->raw_socket = thr_rx_data.raw_socket;
+
 
      }
     
@@ -561,14 +567,9 @@ int main(int argc,char **argv)
 
     for(i=0;i<numtunnels;i++)
     {
-      tunnel=tunnels + i;
+        tunnel=tunnels + i;
         fcntl(tunnel->fd, F_SETFL, O_NONBLOCK);
-	/* Allocate for each thread */
-	thr_tx_data = malloc(sizeof(struct thr_tx));
-        thr_tx_data->tunnel = tunnel;
-	thr_tx_data->cpu = i+1;
-        thr_tx_data->raw_socket = thr_rx_data.raw_socket;
-        rc = pthread_create(&threads[0], &attr, thr_tx, (void *)thr_tx_data);
+        rc = pthread_create(&threads[0], &attr, thr_tx, (void *)tunnel->thr_tx_data);
     }
 
     rc = pthread_join(threads[0], &status);
