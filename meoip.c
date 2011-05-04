@@ -17,7 +17,9 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.*
 */
+#ifndef __UCLIBC__
 #define _GNU_SOURCE 
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -130,7 +132,7 @@ int open_tun(Tunnel *tunnel)
 	return 1;
     }
 
-    bzero(&tunnel->ifr, sizeof(tunnel->ifr));
+    memset(&tunnel->ifr, 0x0, sizeof(tunnel->ifr));
 
     tunnel->ifr.ifr_flags = IFF_TAP|IFF_NO_PI;
     if (tunnel->name[0] != 0)
@@ -220,6 +222,7 @@ void *thr_rx(void *threadid)
     int raw_socket = thr_rx_data->raw_socket;
     fd_set rfds;
 
+#ifndef __UCLIBC__
     cpu_set_t cpuset;
     pthread_t thread = pthread_self();
     int cpu=0;
@@ -232,6 +235,7 @@ void *thr_rx(void *threadid)
 	printf("Affinity error %d\n",ret);
     else
 	printf("RX thread set to cpu %d\n",cpu);
+#endif
 
     rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
     if (!rxringbuffer) {
@@ -244,7 +248,6 @@ void *thr_rx(void *threadid)
     }
 
     while(1) {
-
            FD_ZERO(&rfds);
            FD_SET(raw_socket, &rfds);
            ret = select(raw_socket+1, &rfds, NULL, NULL, NULL);
@@ -288,7 +291,6 @@ void *thr_tx(void *threadid)
 {
     struct thr_tx *thr_tx_data = (struct thr_tx*)threadid;
     Tunnel *tunnel = thr_tx_data->tunnel;
-    int cpu = thr_tx_data->cpu;
     int fd = tunnel->fd;
     int raw_socket = thr_tx_data->raw_socket;
     unsigned char *ip = malloc(MAXPAYLOAD+8); /* 8-byte header of GRE, rest is payload */
@@ -297,6 +299,9 @@ void *thr_tx(void *threadid)
     struct sockaddr_in daddr;
     int ret;
     fd_set rfds;
+
+#ifndef __UCLIBC__    
+    int cpu = thr_tx_data->cpu;
     cpu_set_t cpuset;
     pthread_t thread = pthread_self();
 
@@ -308,8 +313,8 @@ void *thr_tx(void *threadid)
 	printf("Affinity error %d\n",ret);
     else
 	printf("TX thread(ID %d) set to cpu %d\n",tunnel->id,cpu);
-
-    bzero(ip,20);
+#endif
+    memset(ip,0x0,20);
 
     // GRE info?
     ip[0] = 0x20;
@@ -431,7 +436,7 @@ int main(int argc,char **argv)
 	    warn("Destination \"%s\" is not correct\n", strbuf);
 	    exit(-1);
 	}
-	bzero(tunnel->daddr.sin_zero, sizeof(tunnel->daddr.sin_zero));
+	memset(tunnel->daddr.sin_zero, 0x0,sizeof(tunnel->daddr.sin_zero));
 	tunnel->id = (int)ini_getl(section,"id",0,configname);
 	/* TODO: What is max value of tunnel? */
 	if (tunnel->id == 0 || tunnel->id > 65536) {
@@ -460,7 +465,7 @@ int main(int argc,char **argv)
     }
 
 
-    bzero(&sa, sizeof(sa));
+    memset(&sa, 0x0, sizeof(sa));
     sa.sa_handler = term_handler;
     sigaction( SIGTERM , &sa, 0);
     sigaction( SIGINT , &sa, 0);

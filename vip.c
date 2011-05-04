@@ -16,7 +16,9 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.*
 */
+#ifndef __UCLIBC__
 #define _GNU_SOURCE 
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -25,10 +27,8 @@
 #include <arpa/inet.h>
 #include <netinet/if_ether.h>
 #include <net/ethernet.h>
-#ifdef __linux__
 #include <netinet/ether.h>
 #include <linux/if_tun.h>
-#endif
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <string.h>
@@ -63,10 +63,9 @@
 
 #define BIT_COMPRESSED 		(1 << 0)
 #define BIT_PACKED 		(1 << 1)
+#define BIT_XOR 		(1 << 2)
 
 #define PACKINGDELAY 50
-
-
 #define sizearray(a)  (sizeof(a) / sizeof((a)[0]))
 
 typedef struct
@@ -129,7 +128,7 @@ int open_tun(Tunnel *tunnel)
 	return 1;
     }
 
-    bzero(&tunnel->ifr, sizeof(tunnel->ifr));
+    memset(&tunnel->ifr, 0x0, sizeof(tunnel->ifr));
 
     tunnel->ifr.ifr_flags = IFF_TUN|IFF_NO_PI;
     if (tunnel->name[0] != 0)
@@ -174,7 +173,7 @@ void *thr_rx(void *threadid)
 //    unsigned int ctr_packed = 0,ctr_normal = 0;
 
     fd_set rfds;
-
+#ifndef __UCLIBC__
     cpu_set_t cpuset;
     pthread_t thread = pthread_self();
     int cpu=0;
@@ -187,6 +186,7 @@ void *thr_rx(void *threadid)
 	printf("Affinity error %d\n",ret);
     else
 	printf("RX thread set to cpu %d\n",cpu);
+#endif
 
     ret = lzo_init();    
     if (ret != LZO_E_OK) {
@@ -296,7 +296,6 @@ void *thr_tx(void *threadid)
 {
     struct thr_tx *thr_tx_data = (struct thr_tx*)threadid;
     Tunnel *tunnel = thr_tx_data->tunnel;
-    int cpu = thr_tx_data->cpu;
     int fd = tunnel->fd;
     int raw_socket = thr_tx_data->raw_socket;
     unsigned char *ip = malloc(MAXPAYLOAD+2); /* 2-byte header of VIP, rest is payload */
@@ -316,14 +315,24 @@ void *thr_tx(void *threadid)
 //    unsigned int ctr_uncompressed = 0, ctr_compressed = 0, ctr_packed = 0, ctr_normal = 0;
 
     fd_set rfds;
+    struct timeval timeout;
+
+#ifndef __UCLIBC__
+    int cpu = thr_tx_data->cpu;
     cpu_set_t cpuset;
     pthread_t thread = pthread_self();
 
-    struct timeval timeout;
 
     CPU_ZERO(&cpuset);
     CPU_SET(cpu, &cpuset);
+    ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+    if (ret)
+	printf("Affinity error %d\n",ret);
+    else
+	printf("TX thread(ID %d) set to cpu %d\n",tunnel->id,cpu);
 
+
+#endif
     ret = lzo_init();
     if (ret != LZO_E_OK) {
 	printf("LZO init failed\n");
@@ -331,13 +340,8 @@ void *thr_tx(void *threadid)
     }
     wrkmem = (lzo_voidp)malloc(LZO1X_1_MEM_COMPRESS);
 
-    ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-    if (ret)
-	printf("Affinity error %d\n",ret);
-    else
-	printf("TX thread(ID %d) set to cpu %d\n",tunnel->id,cpu);
 
-    bzero(ip,20);
+    memset(ip,0x0,20);
 
     while(1) {
         FD_ZERO(&rfds);
@@ -510,7 +514,7 @@ int main(int argc,char **argv)
 	    warn("Destination \"%s\" is not correct\n", strbuf);
 	    exit(-1);
 	}
-	bzero(tunnel->daddr.sin_zero, sizeof(tunnel->daddr.sin_zero));
+	memset(tunnel->daddr.sin_zero, 0x0, sizeof(tunnel->daddr.sin_zero));
 	tunnel->id = (int)ini_getl(section,"id",0,configname);
 	/* TODO: What is max value of tunnel? */
 	if (tunnel->id == 0 || tunnel->id > 255) {
@@ -539,7 +543,7 @@ int main(int argc,char **argv)
     }
 
 
-    bzero(&sa, sizeof(sa));
+    memset(&sa, 0x0,sizeof(sa));
     sa.sa_handler = term_handler;
     sigaction( SIGTERM , &sa, 0);
     sigaction( SIGINT , &sa, 0);
