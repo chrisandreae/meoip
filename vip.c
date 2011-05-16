@@ -47,7 +47,10 @@
 #include <pthread.h>
 #include "minIni.h"
 #include <lzo/lzo1x.h>
-
+#ifdef GCRYPT
+#include <gcrypt.h>
+#endif
+#include "config.h"
 
 /* In theory maximum payload that can be handled is 65536, but if we use vectorized
    code with preallocated buffers - it is waste of space, especially for embedded setup.
@@ -56,7 +59,7 @@
 */
 
 #define MAXPAYLOAD (2048)
-#define MAXPACKED (1500-200)
+//#define MAXPACKED (1500-200)
 //#define MAXPACKED (1700)
 //#define PREALLOCBUF 32
 #define MAXRINGBUF  64
@@ -66,6 +69,15 @@
 #define BIT_XOR 		(1 << 2)
 
 #define sizearray(a)  (sizeof(a) / sizeof((a)[0]))
+
+#ifndef __cacheline_aligned
+#define __cacheline_aligned \
+__attribute__((__aligned__(SMP_CACHE_BYTES), \
+__section__(".data.cacheline_aligned")))
+#endif /* __cacheline_aligned */
+#define __read_mostly __attribute__((__section__(".data.read_mostly")))
+
+
 
 typedef struct
 {
@@ -84,37 +96,17 @@ struct thr_rx
 
 struct thr_tx
 {
-    int raw_socket;
-    Tunnel *tunnel;
-    int cpu;
+    int 			raw_socket;
+    Tunnel 			*tunnel;
+    int 			cpu;
     unsigned int		packdelay;
+    unsigned int		maxpacked;
 };
 
-int numtunnels;
-Tunnel *tunnels;
+static int numtunnels;
+static Tunnel *tunnels;
 
-void term_handler(int s)
-{ 
-  int 		fd, i;
-  Tunnel	*tunnel;
-
-  if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-    perror("socket() failed");
-    exit(-1);
-  }
-
-  for(i=0;i<numtunnels;i++)
-  {
-    tunnel = tunnels + i;
-
-    close(tunnel->fd);
-  }
-
-  close(fd);
-  exit(0);
-}
-
-int open_tun(Tunnel *tunnel)
+static int open_tun(Tunnel *tunnel)
 {
     int fd;
     
@@ -155,7 +147,7 @@ int open_tun(Tunnel *tunnel)
 }
 
 
-void *thr_rx(void *threadid)
+static void *thr_rx(void *threadid)
 {
     unsigned char *rxringbufptr[MAXRINGBUF];
     int rxringpayload[MAXRINGBUF];
@@ -166,9 +158,14 @@ void *thr_rx(void *threadid)
     struct thr_rx *thr_rx_data = (struct thr_rx*)threadid;
     Tunnel *tunnel;
     int raw_socket = thr_rx_data->raw_socket;
-    unsigned char *decompressed = malloc(MAXPAYLOAD); /* 2-byte header of VIP, rest is payload */
+//    unsigned char *decompressed = malloc(MAXPAYLOAD); /* 2-byte header of VIP, rest is payload */
+    unsigned char *decompressed;    
     unsigned int decompressedsz;
     lzo_voidp wrkmem;
+
+    /* 2-byte header of VIP, rest is payload */
+    if (posix_memalign((void **)&decompressed, 64, MAXPAYLOAD))
+	exit(1);
 
 //    unsigned int ctr_packed = 0,ctr_normal = 0;
 
@@ -193,10 +190,17 @@ void *thr_rx(void *threadid)
 	printf("LZO init failed\n");
 	exit(1);
     }
-    wrkmem = (lzo_voidp)malloc(LZO1X_1_MEM_COMPRESS);
+
+//    wrkmem = (lzo_voidp)malloc(LZO1X_1_MEM_COMPRESS);
+    if (posix_memalign((void **)&wrkmem, 64, LZO1X_1_MEM_COMPRESS))
+	exit(1);
 
 
-    rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
+
+//    rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
+    if (posix_memalign((void **)&rxringbuffer, 64, MAXPAYLOAD*MAXRINGBUF))
+	exit(1);
+
     if (!rxringbuffer) {
 	perror("malloc()");
 	exit(1);
@@ -251,7 +255,7 @@ void *thr_rx(void *threadid)
 
 			    while(1) {
 				total = ntohs(*(uint16_t*)(ptr+offset+2));
-				if (offset+total>rxringpayload[rxringbufused]) {
+				if ((int)(offset+total)>rxringpayload[rxringbufused]) {
 				    printf("invalid offset! %d > %d IP size %d\n",(offset+total),rxringpayload[rxringbufused],total);
 				    break;
 				}
@@ -263,9 +267,9 @@ void *thr_rx(void *threadid)
 //				ctr_normal++;
 				offset += total;
 				/* This is correct */
-				if (offset == rxringpayload[rxringbufused])
+				if ((int)offset == rxringpayload[rxringbufused])
 				    break;
-				if (offset > rxringpayload[rxringbufused]) {
+				if ((int)offset > rxringpayload[rxringbufused]) {
 				    printf("invalid offset! %d+%d > %d\n",offset,total,rxringpayload[rxringbufused]);
 				}
 			    }
@@ -292,7 +296,8 @@ void *thr_rx(void *threadid)
     return(NULL);    
 }
 
-void *thr_tx(void *threadid)
+/* Reading from tun interface, processing and pushing to raw socket */
+static void *thr_tx(void *threadid)
 {
     struct thr_tx *thr_tx_data = (struct thr_tx*)threadid;
     Tunnel *tunnel = thr_tx_data->tunnel;
@@ -311,15 +316,20 @@ void *thr_tx(void *threadid)
     struct sockaddr_in daddr;
     int ret;
 
+
 //    unsigned int ctr_uncompressed = 0, ctr_compressed = 0, ctr_packed = 0, ctr_normal = 0;
     fd_set rfds;
     struct timeval timeout;
     unsigned int packdelay = thr_tx_data->packdelay;
+    unsigned int maxpacked = thr_tx_data->maxpacked;
 #ifndef __UCLIBC__
     int cpu = thr_tx_data->cpu;
     cpu_set_t cpuset;
     pthread_t thread = pthread_self();
-
+#ifdef GCRYPT
+    /* CTRL_PKT, 2 byte VIP hdr, 2 byte extra, 1476 - 369 checksums */
+    uint32_t cksumbuf[369];
+#endif
 
     CPU_ZERO(&cpuset);
     CPU_SET(cpu, &cpuset);
@@ -331,6 +341,9 @@ void *thr_tx(void *threadid)
 
 
 #endif
+
+
+
     ret = lzo_init();
     if (ret != LZO_E_OK) {
 	printf("LZO init failed\n");
@@ -367,7 +380,7 @@ void *thr_tx(void *threadid)
 	timeout.tv_sec = 0;
 	timeout.tv_usec = packdelay; /* ms*1000, 0.05ms */
 
-	while(payloadsz < MAXPACKED) {
+	while(payloadsz < maxpacked) {
 	    /* try to get next packet */
     	    FD_ZERO(&rfds);
     	    FD_SET(fd, &rfds);
@@ -380,8 +393,8 @@ void *thr_tx(void *threadid)
 		prevavail = 0;
 		break;
 	    }
-//	    ctr_normal++;
-	    if (prevavail + payloadsz <= MAXPACKED) {
+
+	    if (prevavail + payloadsz <= maxpacked) {
 		/* Still small, merge packets */
 		ip[1] |= BIT_PACKED;
 		memcpy(payloadptr+payloadsz,prevptr,prevavail);
@@ -412,6 +425,10 @@ void *thr_tx(void *threadid)
 	    payloadsz = compressedsz;
 	}
 
+#ifdef GCRYPT
+	gcry_md_hash_buffer(GCRY_MD_CRC32,cksumbuf,ip,payloadsz+2);
+#endif
+
 	if(sendto(raw_socket, ip, payloadsz+2, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
 		perror("send() err");
 
@@ -440,11 +457,11 @@ int main(int argc,char **argv)
 
     ret = lzo_init();    
 
-    printf("Virtual IP %s\n",VERSION);
+    printf("Virtual IP %s\n",PACKAGE_VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
     printf("Tip: %s [configfile [bindip]]\n",argv[0]);
 
-    thr_rx_data.raw_socket = socket(PF_INET, SOCK_RAW, 131);
+    thr_rx_data.raw_socket = socket(PF_INET, SOCK_RAW, 132);
     if(setsockopt (thr_rx_data.raw_socket, SOL_SOCKET, SO_RCVBUF, &optval, sizeof (optval)))
 	perror("setsockopt(RCVBUF)");
     if(setsockopt (thr_rx_data.raw_socket, SOL_SOCKET, SO_SNDBUF, &optval, sizeof (optval)))
@@ -525,6 +542,7 @@ int main(int argc,char **argv)
         tunnel->thr_tx_data->tunnel = tunnel;
 	tunnel->thr_tx_data->cpu = sn+1;
 	tunnel->thr_tx_data->packdelay = (int)ini_getl(section,"delay",50,configname);;
+	tunnel->thr_tx_data->maxpacked = (int)ini_getl(section,"maxpacked",1300,configname);;
         tunnel->thr_tx_data->raw_socket = thr_rx_data.raw_socket;
 
 
@@ -549,10 +567,10 @@ int main(int argc,char **argv)
     }
 
 
-    memset(&sa, 0x0,sizeof(sa));
-    sa.sa_handler = term_handler;
-    sigaction( SIGTERM , &sa, 0);
-    sigaction( SIGINT , &sa, 0);
+//    memset(&sa, 0x0,sizeof(sa));
+//    sa.sa_handler = term_handler;
+//    sigaction( SIGTERM , &sa, 0);
+//    sigaction( SIGINT , &sa, 0);
 
     threads = malloc(sizeof(pthread_t)*(numtunnels+1));
 

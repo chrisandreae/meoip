@@ -52,6 +52,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include "minIni.h"
+#include "config.h"
 
 /* In theory maximum payload that can be handled is 65536, but if we use vectorized
    code with preallocated buffers - it is waste of space, especially for embedded setup.
@@ -363,7 +364,7 @@ int main(int argc,char **argv)
     int optval=262144;
     
 
-    printf("Mikrotik EoIP %s\n",VERSION);
+    printf("Mikrotik EoIP %s\n",PACKAGE_VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
     printf("Tip: %s [configfile [bindip]]\n",argv[0]);
 
