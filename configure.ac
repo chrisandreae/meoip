@@ -6,6 +6,8 @@ AC_INIT([MEOIP],[0.4],[Denys Fedoryshchenko <denys@visp.net.lb>])
 AC_CONFIG_SRCDIR([minIni.h])
 AC_CONFIG_HEADERS([config.h])
 
+
+CFLAGS=-O3
 # Checks for programs.
 AC_PROG_CC
 
@@ -27,6 +29,8 @@ AC_TYPE_UINT32_T
 # Checks for library functions.
 AC_FUNC_MALLOC
 AC_CHECK_FUNCS([bzero memset select socket])
+
+#AC_SUBST(CFLAGS)
 
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
