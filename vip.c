@@ -167,7 +167,7 @@ static void *thr_rx(void *threadid)
     Tunnel *tunnel;
     int raw_socket = thr_rx_data->raw_socket;
 //    unsigned char *decompressed = malloc(MAXPAYLOAD); /* 2-byte header of VIP, rest is payload */
-    unsigned char *decompressed;    
+    unsigned char *decompressed;
     unsigned int decompressedsz;
 #ifdef HAVE_LIBLZO2
     lzo_voidp wrkmem;
@@ -175,6 +175,7 @@ static void *thr_rx(void *threadid)
     /* 2-byte header of VIP, rest is payload */
     if (posix_memalign((void **)&decompressed, 64, MAXPAYLOAD))
 	exit(1);
+    int counter = 0;
 
 //    unsigned int ctr_packed = 0,ctr_normal = 0;
 
@@ -252,9 +253,17 @@ static void *thr_rx(void *threadid)
 #ifdef HAVE_LIBLZO2
 			if (ptr[21] & BIT_COMPRESSED) {
 			    decompressedsz = MAXPAYLOAD-22-3; /* Lzo note about 3 bytes in asm algos */
-			    lzo1x_decompress(ptr+22,rxringpayload[rxringbufused]-22,decompressed,(lzo_uintp)&decompressedsz,wrkmem);
-			    memcpy(ptr+22,decompressed,decompressedsz);
-			    rxringpayload[rxringbufused] = decompressedsz + 22;
+			    if (decompressed == NULL)
+				printf("NUL!\n");
+			    if (lzo1x_decompress_safe(ptr+22,rxringpayload[rxringbufused]-22,decompressed,(lzo_uintp)&decompressedsz,wrkmem) == LZO_E_OK) {
+				memcpy(ptr+22,decompressed,decompressedsz);
+				rxringpayload[rxringbufused] = decompressedsz + 22;
+			    if (decompressed == NULL)
+				printf("NUL %d!\n",__LINE__);
+
+			    } else {
+				continue;
+			    }
 			}
 #else
 			if (ptr[21] & BIT_COMPRESSED) {
@@ -270,7 +279,7 @@ static void *thr_rx(void *threadid)
 //			    ctr_packed++;				
 
 			    while(1) {
-				total = ntohs(*(uint16_t*)(ptr+offset+2));
+				total = ntohs(*(uint16_t*)(ptr+offset+2)); /* 2 byte - IP offset to total len */
 				if ((int)(offset+total)>rxringpayload[rxringbufused]) {
 				    printf("invalid offset! %d > %d IP size %d\n",(offset+total),rxringpayload[rxringbufused],total);
 				    break;
@@ -288,14 +297,20 @@ static void *thr_rx(void *threadid)
 				if ((int)offset > rxringpayload[rxringbufused]) {
 				    printf("invalid offset! %d+%d > %d\n",offset,total,rxringpayload[rxringbufused]);
 				}
+
 			    }
 			} else {
 			    ret = write(tunnel->fd,ptr+22,rxringpayload[rxringbufused]-22);
 			    if (ret<0)
 			        printf("tunnel write error #2\n");
+			if (decompressed == NULL)
+				printf("NUL %d!\n",__LINE__);
 
 //			    ctr_normal++;
 			}
+			if (decompressed == NULL)
+				printf("NUL %d!\n",__LINE__);
+
 		        break;
 	    	    }
 		}
@@ -446,7 +461,7 @@ static void *thr_tx(void *threadid)
 //	gcry_md_hash_buffer(GCRY_MD_CRC32,cksumbuf,ip,payloadsz+2);
 //#endif
 
-	if(sendto(raw_socket, ip, payloadsz+ADDON, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
+	if(sendto(raw_socket, ip, payloadsz+2, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
 		perror("send() err");
 
     }
@@ -524,9 +539,9 @@ int main(int argc,char **argv)
              }
          }                            
 
-#ifdef HAVE_LIBLZO2
-    ret = lzo_init();    
-#endif
+//#ifdef HAVE_LIBLZO2
+//    ret = lzo_init();    
+//#endif
 
     printf("Virtual IP %s\n",PACKAGE_VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
