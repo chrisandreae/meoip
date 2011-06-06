@@ -19,6 +19,7 @@
 #ifndef __UCLIBC__
 #define _GNU_SOURCE 
 #endif
+#include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -57,7 +58,6 @@
 #else
 #define  ADDON 0
 #endif
-#include "config.h"
 
 /* In theory maximum payload that can be handled is 65536, but if we use vectorized
    code with preallocated buffers - it is waste of space, especially for embedded setup.
