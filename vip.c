@@ -47,10 +47,11 @@
 #include <assert.h>
 #include <pthread.h>
 #include "minIni.h"
+#include <getopt.h>
+
 #ifdef HAVE_LIBLZO2
 #include <lzo/lzo1x.h>
 #endif
-#include <getopt.h>
 
 #ifdef GCRYPT
 #include <gcrypt.h>
@@ -199,7 +200,6 @@ static void *thr_rx(void *threadid)
 	exit(1);
     }
 
-//    wrkmem = (lzo_voidp)malloc(LZO1X_1_MEM_COMPRESS);
     if (posix_memalign((void **)&wrkmem, 64, LZO1X_1_MEM_COMPRESS))
 	exit(1);
 
@@ -251,7 +251,7 @@ static void *thr_rx(void *threadid)
 
 #ifdef HAVE_LIBLZO2
 			if (ptr[21] & BIT_COMPRESSED) {
-			    decompressedsz = MAXPAYLOAD;
+			    decompressedsz = MAXPAYLOAD-22-3; /* Lzo note about 3 bytes in asm algos */
 			    lzo1x_decompress(ptr+22,rxringpayload[rxringbufused]-22,decompressed,(lzo_uintp)&decompressedsz,wrkmem);
 			    memcpy(ptr+22,decompressed,decompressedsz);
 			    rxringpayload[rxringbufused] = decompressedsz + 22;
@@ -259,6 +259,7 @@ static void *thr_rx(void *threadid)
 #else
 			if (ptr[21] & BIT_COMPRESSED) {
 			    printf("Can't decompress. TODO\n");
+			    exit(0);
 			}
 #endif
 
@@ -438,7 +439,7 @@ static void *thr_tx(void *threadid)
 	    payloadsz = compressedsz;
 	}
 #else
-	    compressedsz = 0;
+	compressedsz = 0;
 #endif
 
 #ifdef GCRYPT
@@ -608,7 +609,7 @@ int main(int argc,char **argv)
 	tunnel->thr_tx_data->packdelay = (int)ini_getl(section,"delay",50,configname);;
 	tunnel->thr_tx_data->maxpacked = (int)ini_getl(section,"maxpacked",1300,configname);;
         tunnel->thr_tx_data->raw_socket = thr_rx_data.raw_socket;
-
+	printf("Max packed %d\n",tunnel->thr_tx_data->maxpacked);
 
      }
     
