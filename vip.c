@@ -46,9 +46,16 @@
 #include <assert.h>
 #include <pthread.h>
 #include "minIni.h"
+#ifdef HAVE_LIBLZO2
 #include <lzo/lzo1x.h>
+#endif
+#include <getopt.h>
+
 #ifdef GCRYPT
 #include <gcrypt.h>
+#define  ADDON 2
+#else
+#define  ADDON 0
 #endif
 #include "config.h"
 
@@ -66,7 +73,7 @@
 
 #define BIT_COMPRESSED 		(1 << 0)
 #define BIT_PACKED 		(1 << 1)
-#define BIT_XOR 		(1 << 2)
+#define BIT_SERVICE 		(1 << 2)
 
 #define sizearray(a)  (sizeof(a) / sizeof((a)[0]))
 
@@ -161,8 +168,9 @@ static void *thr_rx(void *threadid)
 //    unsigned char *decompressed = malloc(MAXPAYLOAD); /* 2-byte header of VIP, rest is payload */
     unsigned char *decompressed;    
     unsigned int decompressedsz;
+#ifdef HAVE_LIBLZO2
     lzo_voidp wrkmem;
-
+#endif
     /* 2-byte header of VIP, rest is payload */
     if (posix_memalign((void **)&decompressed, 64, MAXPAYLOAD))
 	exit(1);
@@ -184,7 +192,7 @@ static void *thr_rx(void *threadid)
     else
 	printf("RX thread set to cpu %d\n",cpu);
 #endif
-
+#ifdef HAVE_LIBLZO2
     ret = lzo_init();    
     if (ret != LZO_E_OK) {
 	printf("LZO init failed\n");
@@ -195,6 +203,7 @@ static void *thr_rx(void *threadid)
     if (posix_memalign((void **)&wrkmem, 64, LZO1X_1_MEM_COMPRESS))
 	exit(1);
 
+#endif
 
 
 //    rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
@@ -240,12 +249,18 @@ static void *thr_rx(void *threadid)
             	    if (ptr[20] == (unsigned char )(tunnel->id) )
 	    	    {
 
+#ifdef HAVE_LIBLZO2
 			if (ptr[21] & BIT_COMPRESSED) {
 			    decompressedsz = MAXPAYLOAD;
 			    lzo1x_decompress(ptr+22,rxringpayload[rxringbufused]-22,decompressed,(lzo_uintp)&decompressedsz,wrkmem);
 			    memcpy(ptr+22,decompressed,decompressedsz);
 			    rxringpayload[rxringbufused] = decompressedsz + 22;
 			}
+#else
+			if (ptr[21] & BIT_COMPRESSED) {
+			    printf("Can't decompress. TODO\n");
+			}
+#endif
 
 			if ((ptr[21] & BIT_PACKED)) {
 			    unsigned int offset = 22; /* 20 IP header + 2 byte of tunnel id and bitfield */
@@ -310,7 +325,9 @@ static void *thr_tx(void *threadid)
     int prevavail = 0;
 
     unsigned char *compressed = malloc(MAXPAYLOAD*2); /* 2-byte header of VIP, rest is payload */
+#ifdef HAVE_LIBLZO2
     lzo_voidp wrkmem;
+#endif
     int payloadsz;
     unsigned int compressedsz;
     struct sockaddr_in daddr;
@@ -343,14 +360,14 @@ static void *thr_tx(void *threadid)
 #endif
 
 
-
+#ifdef HAVE_LIBLZO2
     ret = lzo_init();
     if (ret != LZO_E_OK) {
 	printf("LZO init failed\n");
 	exit(1);
     }
     wrkmem = (lzo_voidp)malloc(LZO1X_1_MEM_COMPRESS);
-
+#endif
 
     memset(ip,0x0,20);
 
@@ -408,13 +425,9 @@ static void *thr_tx(void *threadid)
 
 
 
-	
-#ifdef NOLZO
-	compressedsz = MAXPAYLOAD*2;
-#else
+#ifdef HAVE_LIBLZO2
 	compressedsz = MAXPAYLOAD*2;
 	ret = lzo1x_1_compress(payloadptr,payloadsz,compressed,(lzo_uintp)&compressedsz,wrkmem);
-#endif
 
 	/* Adaptive compression */
 	if (compressedsz > payloadsz || compressedsz > MAXPAYLOAD) {
@@ -424,12 +437,15 @@ static void *thr_tx(void *threadid)
 	    memcpy(payloadptr,compressed,compressedsz);
 	    payloadsz = compressedsz;
 	}
+#else
+	    compressedsz = 0;
+#endif
 
 #ifdef GCRYPT
 	gcry_md_hash_buffer(GCRY_MD_CRC32,cksumbuf,ip,payloadsz+2);
 #endif
 
-	if(sendto(raw_socket, ip, payloadsz+2, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
+	if(sendto(raw_socket, ip, payloadsz+ADDON, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
 		perror("send() err");
 
     }
@@ -439,39 +455,91 @@ static void *thr_tx(void *threadid)
 int main(int argc,char **argv)
 {
     struct thr_rx thr_rx_data;
-//    struct thr_tx *thr_tx_data;
-
-    int ret, i, sn,rc;
-//    struct pollfd pollfd[argc-1];
+    int ret, i, sn,rc, protocol = 50, c, len;
     Tunnel *tunnel;
     struct sigaction sa;
     struct stat mystat;
     char section[IFNAMSIZ];
     char strbuf[256];
-    char *configname;
+    char *configname = NULL;
+    char *bindaddr = NULL;
     char defaultcfgname[] = "/etc/vip.cfg";
     pthread_t *threads;
     pthread_attr_t attr;
     void *status;
     int optval=262144;
 
-    ret = lzo_init();    
+
+  while (1)
+         {
+
+	    static struct option long_options[] =
+             {
+               {"protocol",  required_argument, 0, 'p'},
+               {"config",  required_argument, 0, 'c'},
+               {"bind",  required_argument, 0, 'b'},
+               {"help",  no_argument, 0, 'h'},
+               {0, 0, 0, 0}
+             };
+           /* getopt_long stores the option index here. */
+	    int option_index = 0;
+     
+	    c = getopt_long (argc, argv, "p:bh", long_options, &option_index);
+          /* Detect the end of the options. */
+           if (c == -1)
+             break;
+     
+           switch (c)
+             {
+             case 'p':
+		protocol = atoi(optarg);
+               break;
+
+             case 'b':
+		len = strlen(optarg) + 1;
+		bindaddr = malloc(len);
+		strncpy(bindaddr,optarg,len);
+               break;
+
+             case 'c':
+		len = strlen(optarg) + 1;
+		configname = malloc(len);
+		strncpy(configname,optarg,len);
+               break;
+     
+             case 'h':
+		printf("Available options:\n");
+		printf("--protocol 		- Protocol \n");
+		printf("--config 		- Config path\n");
+		printf("--bind 			- Bind address\n");
+		printf("--help			- Help\n");
+//		printf("--triggeroutage		- Detect outage, missed packets/packets ok (0/0)\n");
+               /* getopt_long already printed an error message. */
+		exit(1);
+               break;
+     
+             default:
+               abort ();
+             }
+         }                            
+
+//#ifdef HAVE_LIBLZO2
+//    ret = lzo_init();    
+//#endif
 
     printf("Virtual IP %s\n",PACKAGE_VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
-    printf("Tip: %s [configfile [bindip]]\n",argv[0]);
 
-    thr_rx_data.raw_socket = socket(PF_INET, SOCK_RAW, 132);
+    thr_rx_data.raw_socket = socket(PF_INET, SOCK_RAW, protocol);
     if(setsockopt (thr_rx_data.raw_socket, SOL_SOCKET, SO_RCVBUF, &optval, sizeof (optval)))
 	perror("setsockopt(RCVBUF)");
     if(setsockopt (thr_rx_data.raw_socket, SOL_SOCKET, SO_SNDBUF, &optval, sizeof (optval)))
 	perror("setsockopt(SNDBUF)");
 
-    
-    if (argc == 3) {
+    if (bindaddr != NULL) {
 	struct sockaddr_in serv_addr;
 	serv_addr.sin_family = AF_INET;
-	if (!inet_pton(AF_INET, argv[2], (struct in_addr *)&serv_addr.sin_addr.s_addr)) {
+	if (!inet_pton(AF_INET, bindaddr, (struct in_addr *)&serv_addr.sin_addr.s_addr)) {
 	    perror("bind address invalid");
 	    exit(-1);
 	}
@@ -484,11 +552,8 @@ int main(int argc,char **argv)
 	}
     }
 
-    if (argc == 1) {
+    if (configname == NULL)
 	configname = defaultcfgname;
-    } else {
-	configname = argv[1];
-    }
 
     if (stat(configname,&mystat)) {
 	    perror("config file error");
@@ -503,7 +568,6 @@ int main(int argc,char **argv)
      }
 
     tunnels = malloc(sizeof(Tunnel)*numtunnels);
-//    assert(tunnels, "malloc()");
     memset(tunnels,0x0,sizeof(Tunnel)*numtunnels);
 
     for (sn = 0; ini_getsection(sn, section, sizearray(section), configname) > 0; sn++) {
