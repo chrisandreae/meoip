@@ -53,12 +53,12 @@
 #include <lzo/lzo1x.h>
 #endif
 
-#ifdef GCRYPT
-#include <gcrypt.h>
-#define  ADDON 2
-#else
+//#ifdef GCRYPT
+//#include <gcrypt.h>
+//#define  ADDON 2
+//#else
 #define  ADDON 0
-#endif
+//#endif
 
 /* In theory maximum payload that can be handled is 65536, but if we use vectorized
    code with preallocated buffers - it is waste of space, especially for embedded setup.
@@ -344,10 +344,10 @@ static void *thr_tx(void *threadid)
     int cpu = thr_tx_data->cpu;
     cpu_set_t cpuset;
     pthread_t thread = pthread_self();
-#ifdef GCRYPT
-    /* CTRL_PKT, 2 byte VIP hdr, 2 byte extra, 1476 - 369 checksums */
-    uint32_t cksumbuf[369];
-#endif
+//#ifdef GCRYPT
+//    /* CTRL_PKT, 2 byte VIP hdr, 2 byte extra, 1476 - 369 checksums */
+//    uint32_t cksumbuf[369];
+//#endif
 
     CPU_ZERO(&cpuset);
     CPU_SET(cpu, &cpuset);
@@ -442,9 +442,9 @@ static void *thr_tx(void *threadid)
 	compressedsz = 0;
 #endif
 
-#ifdef GCRYPT
-	gcry_md_hash_buffer(GCRY_MD_CRC32,cksumbuf,ip,payloadsz+2);
-#endif
+//#ifdef GCRYPT
+//	gcry_md_hash_buffer(GCRY_MD_CRC32,cksumbuf,ip,payloadsz+2);
+//#endif
 
 	if(sendto(raw_socket, ip, payloadsz+ADDON, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
 		perror("send() err");
@@ -524,9 +524,9 @@ int main(int argc,char **argv)
              }
          }                            
 
-//#ifdef HAVE_LIBLZO2
-//    ret = lzo_init();    
-//#endif
+#ifdef HAVE_LIBLZO2
+    ret = lzo_init();    
+#endif
 
     printf("Virtual IP %s\n",PACKAGE_VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
