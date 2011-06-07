@@ -7,14 +7,15 @@ AC_CONFIG_SRCDIR([minIni.h])
 AC_CONFIG_HEADERS([config.h])
 
 
-CFLAGS=-O3
+#CFLAGS=-O3
 # Checks for programs.
 AC_PROG_CC
 
 AM_INIT_AUTOMAKE([1.10 no-define])                                                                                                                                                                        
 
 # Checks for libraries.
-AC_CHECK_LIB(pthread, pthread_create)
+#AC_CHECK_LIB(pthread, pthread_create)
+AC_CHECK_LIB(pthread, pthread_create, [LIBS="$LIBS -lpthread"])
 AC_CHECK_LIB(lzo2, lzo1x_decompress)
 
 # Checks for header files.

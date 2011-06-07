@@ -66,7 +66,7 @@
    If you choice performance - more vectors, to avoid expensive context switches
 */
 
-#define MAXPAYLOAD (2048)
+#define MAXPAYLOAD (4096)
 //#define MAXPACKED (1500-200)
 //#define MAXPACKED (1700)
 //#define PREALLOCBUF 32
@@ -85,7 +85,7 @@ __section__(".data.cacheline_aligned")))
 #endif /* __cacheline_aligned */
 #define __read_mostly __attribute__((__section__(".data.read_mostly")))
 
-
+pthread_mutex_t raw_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct
 {
@@ -108,7 +108,7 @@ struct thr_tx
     Tunnel 			*tunnel;
     int 			cpu;
     unsigned int		packdelay;
-    unsigned int		maxpacked;
+    int		maxpacked;
 };
 
 static int numtunnels;
@@ -167,23 +167,29 @@ static void *thr_rx(void *threadid)
     Tunnel *tunnel;
     int raw_socket = thr_rx_data->raw_socket;
 //    unsigned char *decompressed = malloc(MAXPAYLOAD); /* 2-byte header of VIP, rest is payload */
-    unsigned char *decompressed;
+    unsigned char *decompressed = NULL;
     unsigned int decompressedsz;
-#ifdef HAVE_LIBLZO2
-    lzo_voidp wrkmem;
-#endif
+//#ifdef HAVE_LIBLZO2
+//    lzo_voidp wrkmem;
+//#endif
     /* 2-byte header of VIP, rest is payload */
-    if (posix_memalign((void **)&decompressed, 64, MAXPAYLOAD))
-	exit(1);
-    int counter = 0;
+    if (posix_memalign((void*)&decompressed, 64, MAXPAYLOAD)) {
+	printf("memalign failed\n");
+	pthread_exit(0);
+    }
+    
+    printf("thr_rx ptr %p\n",decompressed);
+    memset(decompressed,0x0,MAXPAYLOAD);
 
+    
 //    unsigned int ctr_packed = 0,ctr_normal = 0;
 
     fd_set rfds;
 #ifndef __UCLIBC__
     cpu_set_t cpuset;
-    pthread_t thread = pthread_self();
     int cpu=0;
+    pthread_t thread = pthread_self();
+
 
     CPU_ZERO(&cpuset);
     CPU_SET(cpu, &cpuset);
@@ -201,8 +207,8 @@ static void *thr_rx(void *threadid)
 	exit(1);
     }
 
-    if (posix_memalign((void **)&wrkmem, 64, LZO1X_1_MEM_COMPRESS))
-	exit(1);
+//    if (posix_memalign((void **)&wrkmem, 64, LZO1X_1_MEM_COMPRESS))
+//	exit(1);
 
 #endif
 
@@ -210,6 +216,7 @@ static void *thr_rx(void *threadid)
 //    rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
     if (posix_memalign((void **)&rxringbuffer, 64, MAXPAYLOAD*MAXRINGBUF))
 	exit(1);
+
 
     if (!rxringbuffer) {
 	perror("malloc()");
@@ -228,7 +235,10 @@ static void *thr_rx(void *threadid)
 
 	    assert(rxringbufused == 0);
 	    while (rxringbufused < MAXRINGBUF) {
+		pthread_mutex_lock(&raw_mutex);
 		rxringpayload[rxringbufused] = read(raw_socket,rxringbufptr[rxringbufused],MAXPAYLOAD);
+		pthread_mutex_unlock(&raw_mutex);
+		
 		if (rxringpayload[rxringbufused] < 0)
 		    break;
 
@@ -246,26 +256,40 @@ static void *thr_rx(void *threadid)
 		/* TODO: Optimize search of tunnel id */
         	for(i=0;i<numtunnels;i++)
         	{
+
 	    	    tunnel=tunnels + i;		    
             	    if (ptr[20] == (unsigned char )(tunnel->id) )
 	    	    {
 
 #ifdef HAVE_LIBLZO2
 			if (ptr[21] & BIT_COMPRESSED) {
-			    decompressedsz = MAXPAYLOAD-22-3; /* Lzo note about 3 bytes in asm algos */
-			    if (decompressed == NULL)
-				printf("NUL!\n");
-			    if (lzo1x_decompress_safe(ptr+22,rxringpayload[rxringbufused]-22,decompressed,(lzo_uintp)&decompressedsz,wrkmem) == LZO_E_OK) {
+//			    decompressedsz = MAXPAYLOAD-22-3; /* Lzo note about 3 bytes in asm algos */
+			    decompressedsz = MAXPAYLOAD;
+			    assert(decompressed != NULL);
+			    if (lzo1x_decompress(ptr+22,rxringpayload[rxringbufused]-22,decompressed,(lzo_uintp)&decompressedsz,NULL) == LZO_E_OK) {
+				printf("ptr %p sz %d sz2 %d szpkt %d\n",decompressed,sizeof(lzo_uintp),sizeof(&decompressedsz),rxringpayload[rxringbufused]-22);
+				if (decompressed == NULL) {
+				    int i;
+				    i = open("pkt",O_RDWR);
+				    write(i,&ptr[22],rxringpayload[rxringbufused]-22);
+				    close(i);
+				    for (i=0;i<rxringpayload[rxringbufused]-22;i++) {
+					printf("%.02x",ptr[22+i]);
+				    }
+				    printf("\n");
+				}
+				assert(decompressed != NULL);
 				memcpy(ptr+22,decompressed,decompressedsz);
 				rxringpayload[rxringbufused] = decompressedsz + 22;
-			    if (decompressed == NULL)
-				printf("NUL %d!\n",__LINE__);
-
 			    } else {
-				continue;
+				perror("lzo feeling bad about your packet\n");
+				exit(1);
 			    }
 			}
+			
+
 #else
+
 			if (ptr[21] & BIT_COMPRESSED) {
 			    printf("Can't decompress. TODO\n");
 			    exit(0);
@@ -277,39 +301,41 @@ static void *thr_rx(void *threadid)
 			    unsigned short total;
 
 //			    ctr_packed++;				
-
 			    while(1) {
+				
 				total = ntohs(*(uint16_t*)(ptr+offset+2)); /* 2 byte - IP offset to total len */
+				
 				if ((int)(offset+total)>rxringpayload[rxringbufused]) {
+				    
 				    printf("invalid offset! %d > %d IP size %d\n",(offset+total),rxringpayload[rxringbufused],total);
+				    
 				    break;
 				}
-
+				pthread_mutex_lock(&raw_mutex);
 				ret = write(tunnel->fd,ptr+offset,total);
+				pthread_mutex_unlock(&raw_mutex);
+
 				if (ret<0)
 				    printf("tunnel write error #1\n");
-
-//				ctr_normal++;
+				
 				offset += total;
+				
 				/* This is correct */
 				if ((int)offset == rxringpayload[rxringbufused])
 				    break;
 				if ((int)offset > rxringpayload[rxringbufused]) {
 				    printf("invalid offset! %d+%d > %d\n",offset,total,rxringpayload[rxringbufused]);
 				}
-
+				
 			    }
 			} else {
+			    pthread_mutex_lock(&raw_mutex);
 			    ret = write(tunnel->fd,ptr+22,rxringpayload[rxringbufused]-22);
+			    pthread_mutex_unlock(&raw_mutex);
+			    
 			    if (ret<0)
 			        printf("tunnel write error #2\n");
-			if (decompressed == NULL)
-				printf("NUL %d!\n",__LINE__);
-
-//			    ctr_normal++;
 			}
-			if (decompressed == NULL)
-				printf("NUL %d!\n",__LINE__);
 
 		        break;
 	    	    }
@@ -345,7 +371,7 @@ static void *thr_tx(void *threadid)
     lzo_voidp wrkmem;
 #endif
     int payloadsz;
-    unsigned int compressedsz;
+    int compressedsz;
     struct sockaddr_in daddr;
     int ret;
 
@@ -354,7 +380,7 @@ static void *thr_tx(void *threadid)
     fd_set rfds;
     struct timeval timeout;
     unsigned int packdelay = thr_tx_data->packdelay;
-    unsigned int maxpacked = thr_tx_data->maxpacked;
+    int maxpacked = thr_tx_data->maxpacked;
 #ifndef __UCLIBC__
     int cpu = thr_tx_data->cpu;
     cpu_set_t cpuset;
@@ -397,7 +423,10 @@ static void *thr_tx(void *threadid)
 	ip[1] = 0; 
 
 	if (!prevavail) {
+	    pthread_mutex_lock(&raw_mutex);
 	    payloadsz = read(fd,payloadptr,MAXPAYLOAD);
+	    pthread_mutex_unlock(&raw_mutex);
+	    
 	    if (payloadsz < 0)
 		continue;
 //	    ctr_normal++;
@@ -461,8 +490,10 @@ static void *thr_tx(void *threadid)
 //	gcry_md_hash_buffer(GCRY_MD_CRC32,cksumbuf,ip,payloadsz+2);
 //#endif
 
+	pthread_mutex_lock(&raw_mutex);
 	if(sendto(raw_socket, ip, payloadsz+2, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
 		perror("send() err");
+	pthread_mutex_unlock(&raw_mutex);
 
     }
     return(NULL);    
@@ -655,7 +686,7 @@ int main(int argc,char **argv)
     threads = malloc(sizeof(pthread_t)*(numtunnels+1));
 
     /* Fork after creating tunnels, useful for scripts */
-    ret = daemon(1,1);
+//    ret = daemon(1,1);
 
 
     pthread_attr_init(&attr);
@@ -667,7 +698,7 @@ int main(int argc,char **argv)
     {
         tunnel=tunnels + i;
         fcntl(tunnel->fd, F_SETFL, O_NONBLOCK);
-        rc = pthread_create(&threads[0], &attr, thr_tx, (void *)tunnel->thr_tx_data);
+//        rc = pthread_create(&threads[i+1], &attr, thr_tx, (void *)tunnel->thr_tx_data);
     }
 
     rc = pthread_join(threads[0], &status);
