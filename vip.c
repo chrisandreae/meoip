@@ -157,34 +157,25 @@ static int open_tun(Tunnel *tunnel)
 
 static void *thr_rx(void *threadid)
 {
-    unsigned char *rxringbufptr[MAXRINGBUF];
-    int rxringpayload[MAXRINGBUF];
-    unsigned char *rxringbuffer;
-    int rxringbufused = 0;
-    unsigned char *ptr;
-    int i,ret;
+    static unsigned char *rxringbufptr[MAXRINGBUF];
+    static int rxringpayload[MAXRINGBUF];
+    static unsigned char *rxringbuffer;
+    static int rxringbufused = 0;
+    static unsigned char *ptr;
+    static int i,ret;
     struct thr_rx *thr_rx_data = (struct thr_rx*)threadid;
-    Tunnel *tunnel;
+    static Tunnel *tunnel;
     int raw_socket = thr_rx_data->raw_socket;
-//    unsigned char *decompressed = malloc(MAXPAYLOAD); /* 2-byte header of VIP, rest is payload */
-    unsigned char *decompressed = NULL;
-    unsigned int decompressedsz;
-//#ifdef HAVE_LIBLZO2
-//    lzo_voidp wrkmem;
-//#endif
+    static unsigned char *decompressed = NULL;
+    static unsigned int decompressedsz;
+    static fd_set rfds;
+
     /* 2-byte header of VIP, rest is payload */
     if (posix_memalign((void*)&decompressed, 64, MAXPAYLOAD)) {
 	printf("memalign failed\n");
 	pthread_exit(0);
     }
     
-    printf("thr_rx ptr %p\n",decompressed);
-    memset(decompressed,0x0,MAXPAYLOAD);
-
-    
-//    unsigned int ctr_packed = 0,ctr_normal = 0;
-
-    fd_set rfds;
 #ifndef __UCLIBC__
     cpu_set_t cpuset;
     int cpu=0;
@@ -233,7 +224,6 @@ static void *thr_rx(void *threadid)
            FD_SET(raw_socket, &rfds);
            ret = select(raw_socket+1, &rfds, NULL, NULL, NULL);
 
-	    assert(rxringbufused == 0);
 	    while (rxringbufused < MAXRINGBUF) {
 		pthread_mutex_lock(&raw_mutex);
 		rxringpayload[rxringbufused] = read(raw_socket,rxringbufptr[rxringbufused],MAXPAYLOAD);
@@ -265,20 +255,11 @@ static void *thr_rx(void *threadid)
 			if (ptr[21] & BIT_COMPRESSED) {
 //			    decompressedsz = MAXPAYLOAD-22-3; /* Lzo note about 3 bytes in asm algos */
 			    decompressedsz = MAXPAYLOAD;
-			    assert(decompressed != NULL);
 			    if (lzo1x_decompress(ptr+22,rxringpayload[rxringbufused]-22,decompressed,(lzo_uintp)&decompressedsz,NULL) == LZO_E_OK) {
-				printf("ptr %p sz %d sz2 %d szpkt %d\n",decompressed,sizeof(lzo_uintp),sizeof(&decompressedsz),rxringpayload[rxringbufused]-22);
 				if (decompressed == NULL) {
-				    int i;
-				    i = open("pkt",O_RDWR);
-				    write(i,&ptr[22],rxringpayload[rxringbufused]-22);
-				    close(i);
-				    for (i=0;i<rxringpayload[rxringbufused]-22;i++) {
-					printf("%.02x",ptr[22+i]);
-				    }
-				    printf("\n");
+				    printf("Please report to developer about this bug\n");
+				    pthread_exit(1);
 				}
-				assert(decompressed != NULL);
 				memcpy(ptr+22,decompressed,decompressedsz);
 				rxringpayload[rxringbufused] = decompressedsz + 22;
 			    } else {
@@ -653,9 +634,9 @@ int main(int argc,char **argv)
         tunnel->thr_tx_data->tunnel = tunnel;
 	tunnel->thr_tx_data->cpu = sn+1;
 	tunnel->thr_tx_data->packdelay = (int)ini_getl(section,"delay",50,configname);;
-	tunnel->thr_tx_data->maxpacked = (int)ini_getl(section,"maxpacked",1300,configname);;
+	tunnel->thr_tx_data->maxpacked = (int)ini_getl(section,"maxpacked",1500,configname);;
         tunnel->thr_tx_data->raw_socket = thr_rx_data.raw_socket;
-	printf("Max packed %d\n",tunnel->thr_tx_data->maxpacked);
+	//printf("Max packed %d\n",tunnel->thr_tx_data->maxpacked);
 
      }
     
@@ -686,7 +667,7 @@ int main(int argc,char **argv)
     threads = malloc(sizeof(pthread_t)*(numtunnels+1));
 
     /* Fork after creating tunnels, useful for scripts */
-//    ret = daemon(1,1);
+    ret = daemon(1,1);
 
 
     pthread_attr_init(&attr);
@@ -698,7 +679,7 @@ int main(int argc,char **argv)
     {
         tunnel=tunnels + i;
         fcntl(tunnel->fd, F_SETFL, O_NONBLOCK);
-//        rc = pthread_create(&threads[i+1], &attr, thr_tx, (void *)tunnel->thr_tx_data);
+        rc = pthread_create(&threads[i+1], &attr, thr_tx, (void *)tunnel->thr_tx_data);
     }
 
     rc = pthread_join(threads[0], &status);
