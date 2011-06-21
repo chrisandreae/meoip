@@ -335,6 +335,10 @@ static void *thr_rx(void *threadid)
 		rxringconsumed++;
 	    } while (rxringconsumed < rxringbufused);
 	    rxringbufused -= rxringconsumed;
+	    if (rxringbufused) {
+		memmove(&rxringpayload[0],&rxringpayload[rxringconsumed],rxringbufused);
+	    }
+
     }
     return(NULL);    
 }

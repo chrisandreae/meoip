@@ -215,7 +215,7 @@ void *thr_rx(void *threadid)
     unsigned char *rxringbufptr[MAXRINGBUF];
     int rxringpayload[MAXRINGBUF];
     unsigned char *rxringbuffer;
-    int rxringbufused = 0;
+    int rxringbufused = 0, rxringbufconsumed;
     unsigned char *ptr;
     int i,ret;
     struct thr_rx *thr_rx_data = (struct thr_rx*)threadid;
@@ -266,9 +266,9 @@ void *thr_rx(void *threadid)
 	    if (!rxringbufused)
 		continue;
 
+	    rxringbufconsumed = 0;
 	    do {
-		rxringbufused--;
-		ptr = rxringbufptr[rxringbufused];
+		ptr = rxringbufptr[rxringbufconsumed];
 		ret = 0;
 		/* TODO: Optimize search of tunnel id */
         	for(i=0;i<numtunnels;i++)
@@ -276,14 +276,16 @@ void *thr_rx(void *threadid)
 	    	    tunnel=tunnels + i;		    
             	    if (ptr[26] == (unsigned char )(tunnel->id & 0xFF) && ptr[27] == (unsigned char )(((tunnel->id & 0xFF00) >> 8)))
 	    	    {
-			ret = write(tunnel->fd,ptr+28,rxringpayload[rxringbufused]-28);
+			ret = write(tunnel->fd,ptr+28,rxringpayload[rxringbufconsumed]-28);
 		        break;
 	    	    }
 		}
 		// debug
 		//if (ret == 0)
 		//    printf("Invalid ID received on gre\n");
-	    } while (rxringbufused);
+		rxringbufconsumed++;
+	    } while (rxringbufconsumed < rxringbufused);
+	    rxringbufused -= rxringbufconsumed;
     }
     return(NULL);    
 }
