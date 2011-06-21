@@ -111,6 +111,16 @@ struct thr_tx
     int		maxpacked;
 };
 
+/*
+struct snd_buf
+{
+    unsigned char		data[MAXPAYLOAD];
+    unsigned int 		size;
+    unsigned int		crc;
+};
+*/
+
+
 static int numtunnels;
 static Tunnel *tunnels;
 
@@ -160,7 +170,7 @@ static void *thr_rx(void *threadid)
     static unsigned char *rxringbufptr[MAXRINGBUF];
     static int rxringpayload[MAXRINGBUF];
     static unsigned char *rxringbuffer;
-    static int rxringbufused = 0;
+    static int rxringbufused = 0, rxringconsumed;
     static unsigned char *ptr;
     static int i,ret;
     struct thr_rx *thr_rx_data = (struct thr_rx*)threadid;
@@ -189,7 +199,7 @@ static void *thr_rx(void *threadid)
     if (ret)
 	printf("Affinity error %d\n",ret);
     else
-	printf("RX thread set to cpu %d\n",cpu);
+	printf("RX thread cpu %d\n",cpu);
 #endif
 #ifdef HAVE_LIBLZO2
     ret = lzo_init();    
@@ -239,9 +249,9 @@ static void *thr_rx(void *threadid)
 	    if (!rxringbufused)
 		continue;
 
+	    rxringconsumed=0;
 	    do {
-		rxringbufused--;
-		ptr = rxringbufptr[rxringbufused];
+		ptr = rxringbufptr[rxringconsumed];
 		ret = 0;
 		/* TODO: Optimize search of tunnel id */
         	for(i=0;i<numtunnels;i++)
@@ -255,13 +265,13 @@ static void *thr_rx(void *threadid)
 			if (ptr[21] & BIT_COMPRESSED) {
 //			    decompressedsz = MAXPAYLOAD-22-3; /* Lzo note about 3 bytes in asm algos */
 			    decompressedsz = MAXPAYLOAD;
-			    if (lzo1x_decompress(ptr+22,rxringpayload[rxringbufused]-22,decompressed,(lzo_uintp)&decompressedsz,NULL) == LZO_E_OK) {
+			    if (lzo1x_decompress(ptr+22,rxringpayload[rxringconsumed]-22,decompressed,(lzo_uintp)&decompressedsz,NULL) == LZO_E_OK) {
 				if (decompressed == NULL) {
 				    printf("Please report to developer about this bug\n");
 				    pthread_exit(1);
 				}
 				memcpy(ptr+22,decompressed,decompressedsz);
-				rxringpayload[rxringbufused] = decompressedsz + 22;
+				rxringpayload[rxringconsumed] = decompressedsz + 22;
 			    } else {
 				perror("lzo feeling bad about your packet\n");
 				exit(1);
@@ -286,9 +296,9 @@ static void *thr_rx(void *threadid)
 				
 				total = ntohs(*(uint16_t*)(ptr+offset+2)); /* 2 byte - IP offset to total len */
 				
-				if ((int)(offset+total)>rxringpayload[rxringbufused]) {
+				if ((int)(offset+total)>rxringpayload[rxringconsumed]) {
 				    
-				    printf("invalid offset! %d > %d IP size %d\n",(offset+total),rxringpayload[rxringbufused],total);
+				    printf("invalid offset! %d > %d IP size %d\n",(offset+total),rxringpayload[rxringconsumed],total);
 				    
 				    break;
 				}
@@ -302,16 +312,16 @@ static void *thr_rx(void *threadid)
 				offset += total;
 				
 				/* This is correct */
-				if ((int)offset == rxringpayload[rxringbufused])
+				if ((int)offset == rxringpayload[rxringconsumed])
 				    break;
-				if ((int)offset > rxringpayload[rxringbufused]) {
-				    printf("invalid offset! %d+%d > %d\n",offset,total,rxringpayload[rxringbufused]);
+				if ((int)offset > rxringpayload[rxringconsumed]) {
+				    printf("invalid offset! %d+%d > %d\n",offset,total,rxringpayload[rxringconsumed]);
 				}
 				
 			    }
 			} else {
 			    pthread_mutex_lock(&raw_mutex);
-			    ret = write(tunnel->fd,ptr+22,rxringpayload[rxringbufused]-22);
+			    ret = write(tunnel->fd,ptr+22,rxringpayload[rxringconsumed]-22);
 			    pthread_mutex_unlock(&raw_mutex);
 			    
 			    if (ret<0)
@@ -322,17 +332,18 @@ static void *thr_rx(void *threadid)
 	    	    }
 		}
 
-	// debug
-//	if (ctr_packed > 1000) {
-//	    printf("DEBUG: %d/%d packed\n",ctr_packed,ctr_normal);
-//	    ctr_packed = 0;
-//	    ctr_normal = 0;
-//	}
-
-	    } while (rxringbufused);
+		rxringconsumed++;
+	    } while (rxringconsumed < rxringbufused);
+	    rxringbufused -= rxringconsumed;
     }
     return(NULL);    
 }
+
+static void preserve_data (unsigned char *data,int size) {
+    
+
+}
+
 
 /* Reading from tun interface, processing and pushing to raw socket */
 static void *thr_tx(void *threadid)
@@ -633,9 +644,10 @@ int main(int argc,char **argv)
 	tunnel->thr_tx_data = malloc(sizeof(struct thr_tx));
         tunnel->thr_tx_data->tunnel = tunnel;
 	tunnel->thr_tx_data->cpu = sn+1;
-	tunnel->thr_tx_data->packdelay = (int)ini_getl(section,"delay",50,configname);;
-	tunnel->thr_tx_data->maxpacked = (int)ini_getl(section,"maxpacked",1500,configname);;
+	tunnel->thr_tx_data->packdelay = (int)ini_getl(section,"delay",50,configname);
+	tunnel->thr_tx_data->maxpacked = (int)ini_getl(section,"maxpacked",1500,configname);
         tunnel->thr_tx_data->raw_socket = thr_rx_data.raw_socket;
+	printf("Name %s ID %d Delay %d maxpacked %d\n",tunnel->name,tunnel->id,tunnel->thr_tx_data->packdelay,tunnel->thr_tx_data->maxpacked);
 	//printf("Max packed %d\n",tunnel->thr_tx_data->maxpacked);
 
      }
