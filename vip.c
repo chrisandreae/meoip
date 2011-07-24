@@ -265,16 +265,16 @@ static void *thr_rx(void *threadid)
 			if (ptr[21] & BIT_COMPRESSED) {
 //			    decompressedsz = MAXPAYLOAD-22-3; /* Lzo note about 3 bytes in asm algos */
 			    decompressedsz = MAXPAYLOAD;
-			    if (lzo1x_decompress(ptr+22,rxringpayload[rxringconsumed]-22,decompressed,(lzo_uintp)&decompressedsz,NULL) == LZO_E_OK) {
+			    if (lzo1x_decompress_safe(ptr+22,rxringpayload[rxringconsumed]-22,decompressed,(lzo_uintp)&decompressedsz,NULL) == LZO_E_OK) {
 				if (decompressed == NULL) {
 				    printf("Please report to developer about this bug\n");
-				    pthread_exit(1);
+				    //pthread_exit(1);
 				}
 				memcpy(ptr+22,decompressed,decompressedsz);
 				rxringpayload[rxringconsumed] = decompressedsz + 22;
 			    } else {
 				perror("lzo feeling bad about your packet\n");
-				exit(1);
+				//exit(1);
 			    }
 			}
 			
@@ -527,7 +527,7 @@ int main(int argc,char **argv)
            /* getopt_long stores the option index here. */
 	    int option_index = 0;
      
-	    c = getopt_long (argc, argv, "p:bh", long_options, &option_index);
+	    c = getopt_long (argc, argv, "c:p:b:h", long_options, &option_index);
           /* Detect the end of the options. */
            if (c == -1)
              break;

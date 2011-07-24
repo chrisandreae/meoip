@@ -368,7 +368,8 @@ int main(int argc,char **argv)
     pthread_attr_t attr;
     void *status;
     int optval=262144;
-    
+    FILE *mfd;    
+    char *pidfile;
 
     printf("Mikrotik EoIP %s\n",PACKAGE_VERSION);
     printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
@@ -481,6 +482,13 @@ int main(int argc,char **argv)
 
     /* Fork after creating tunnels, useful for scripts */
     ret = daemon(1,1);
+    
+    if (asprintf(&pidfile,"/var/run/eoip-%s",basename(configname)) == -1)
+	exit(1);
+    
+    mfd = fopen(pidfile,"w");
+    fprintf(mfd,"%d",getpid());
+    fclose(mfd);
 
 
     /* structure of Mikrotik EoIP:
