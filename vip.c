@@ -108,7 +108,8 @@ struct thr_tx
     Tunnel 			*tunnel;
     int 			cpu;
     unsigned int		packdelay;
-    int		maxpacked;
+    int				maxpacked;
+    int				compression;
 };
 
 /*
@@ -214,10 +215,11 @@ static void *thr_rx(void *threadid)
 #endif
 
 
-//    rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
-    if (posix_memalign((void **)&rxringbuffer, 64, MAXPAYLOAD*MAXRINGBUF))
-	exit(1);
+    rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
 
+/*    if (posix_memalign((void **)&rxringbuffer, 64, MAXPAYLOAD*MAXRINGBUF))
+	exit(1);
+*/
 
     if (!rxringbuffer) {
 	perror("malloc()");
@@ -377,6 +379,8 @@ static void *thr_tx(void *threadid)
     struct timeval timeout;
     unsigned int packdelay = thr_tx_data->packdelay;
     int maxpacked = thr_tx_data->maxpacked;
+    int compression = thr_tx_data->compression;
+    int multiplier = 1;
 #ifndef __UCLIBC__
     int cpu = thr_tx_data->cpu;
     cpu_set_t cpuset;
@@ -392,7 +396,7 @@ static void *thr_tx(void *threadid)
     if (ret)
 	printf("Affinity error %d\n",ret);
     else
-	printf("TX thread(ID %d) set to cpu %d\n",tunnel->id,cpu);
+	printf("TX thread(ID %d) set to cpu %d packdelay %d\n",tunnel->id,cpu,packdelay);
 
 
 #endif
@@ -425,7 +429,7 @@ static void *thr_tx(void *threadid)
 	    
 	    if (payloadsz < 0)
 		continue;
-//	    ctr_normal++;
+
 	    unsigned short total = ntohs(*(uint16_t*)(payloadptr+2));
 	    if (total != payloadsz)
 		printf("t %d p %d\n",total,payloadsz);
@@ -435,24 +439,37 @@ static void *thr_tx(void *threadid)
 	    memcpy(payloadptr,prevptr,prevavail);
 	    prevavail = 0;
 	}
+
+	/* If we are fragmented anyway, try to increase second packet size
+	    so average packet size will be higher	    
+	*/
+	if (payloadsz > maxpacked) 
+	    multiplier = 2;
+	else
+	    multiplier = 1;
+
 	timeout.tv_sec = 0;
 	timeout.tv_usec = packdelay; /* ms*1000, 0.05ms */
 
-	while(payloadsz < maxpacked) {
+	while(payloadsz < (maxpacked*multiplier) ) {
 	    /* try to get next packet */
     	    FD_ZERO(&rfds);
     	    FD_SET(fd, &rfds);
     	    ret = select(fd+1, &rfds, NULL, NULL, &timeout);
-	    if (ret<=0)
-		break;
-
-	    prevavail = read(fd,prevptr,MAXPAYLOAD);
-	    if (prevavail < 0) {
-		prevavail = 0;
+	    if (ret<=0) {
 		break;
 	    }
 
-	    if (prevavail + payloadsz <= maxpacked) {
+	    prevavail = read(fd,prevptr,MAXPAYLOAD);
+	    /* TODO: unlikely */
+	    if (prevavail < 0) {
+		perror("Invalid situation\n");
+		prevavail = 0;
+		continue;
+		//break;
+	    }
+
+	    if (prevavail + payloadsz <= (maxpacked * multiplier)) {
 		/* Still small, merge packets */
 		ip[1] |= BIT_PACKED;
 		memcpy(payloadptr+payloadsz,prevptr,prevavail);
@@ -467,20 +484,23 @@ static void *thr_tx(void *threadid)
 
 
 #ifdef HAVE_LIBLZO2
-	compressedsz = MAXPAYLOAD*2;
-	ret = lzo1x_1_compress(payloadptr,payloadsz,compressed,(lzo_uintp)&compressedsz,wrkmem);
+	if (compression) {
+	    compressedsz = MAXPAYLOAD*2;
+	    ret = lzo1x_1_compress(payloadptr,payloadsz,compressed,(lzo_uintp)&compressedsz,wrkmem);
 
-	/* Adaptive compression */
-	if (compressedsz > payloadsz || compressedsz > MAXPAYLOAD) {
-	    compressedsz = 0;
-	} else {
-	    ip[1] |= BIT_COMPRESSED;
-	    memcpy(payloadptr,compressed,compressedsz);
-	    payloadsz = compressedsz;
+	    /* Adaptive compression */
+	    if (compressedsz >= payloadsz || compressedsz > MAXPAYLOAD) {
+		compressedsz = 0;
+	    } else {
+		ip[1] |= BIT_COMPRESSED;
+		memcpy(payloadptr,compressed,compressedsz);
+		payloadsz = compressedsz;
+	    }
 	}
 #else
 	compressedsz = 0;
 #endif
+
 
 //#ifdef GCRYPT
 //	gcry_md_hash_buffer(GCRY_MD_CRC32,cksumbuf,ip,payloadsz+2);
@@ -648,12 +668,14 @@ int main(int argc,char **argv)
 	tunnel->thr_tx_data = malloc(sizeof(struct thr_tx));
         tunnel->thr_tx_data->tunnel = tunnel;
 	tunnel->thr_tx_data->cpu = sn+1;
-	tunnel->thr_tx_data->packdelay = (int)ini_getl(section,"delay",50,configname);
+	tunnel->thr_tx_data->packdelay = (int)ini_getl(section,"delay",1000,configname);
 	tunnel->thr_tx_data->maxpacked = (int)ini_getl(section,"maxpacked",1500,configname);
+	tunnel->thr_tx_data->compression = (int)ini_getl(section,"compression",1,configname);
         tunnel->thr_tx_data->raw_socket = thr_rx_data.raw_socket;
-	printf("Name %s ID %d Delay %d maxpacked %d\n",tunnel->name,tunnel->id,tunnel->thr_tx_data->packdelay,tunnel->thr_tx_data->maxpacked);
+	if (tunnel->thr_tx_data->maxpacked > 1500)
+	    tunnel->thr_tx_data->maxpacked = 1500;
+	printf("Name %s ID %d Delay %d maxpacked %d compression %d\n",tunnel->name,tunnel->id,tunnel->thr_tx_data->packdelay,tunnel->thr_tx_data->maxpacked,tunnel->thr_tx_data->compression);
 	//printf("Max packed %d\n",tunnel->thr_tx_data->maxpacked);
-
      }
     
 
