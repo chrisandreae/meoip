@@ -125,6 +125,17 @@ struct snd_buf
 static int numtunnels;
 static Tunnel *tunnels;
 
+
+/*
+void error( const char* format, ...) {
+    va_list args;
+    va_start( args, format );
+    vfprintf( stderr, format, args );
+    va_end( args );
+    fprintf( stderr, "\n" );
+}
+*/
+
 static int open_tun(Tunnel *tunnel)
 {
     int fd;
@@ -274,8 +285,9 @@ static void *thr_rx(void *threadid)
 				}
 				memcpy(ptr+22,decompressed,decompressedsz);
 				rxringpayload[rxringconsumed] = decompressedsz + 22;
-			    } else {
-				perror("lzo feeling bad about your packet\n");
+			    } else {				
+				perror("lzo feeling bad about your packet\n");\
+				break;
 				//exit(1);
 			    }
 			}
@@ -294,30 +306,30 @@ static void *thr_rx(void *threadid)
 			    unsigned short total;
 
 //			    ctr_packed++;				
-			    while(1) {
-				
+			    while(1) {				
 				total = ntohs(*(uint16_t*)(ptr+offset+2)); /* 2 byte - IP offset to total len */
 				
-				if ((int)(offset+total)>rxringpayload[rxringconsumed]) {
-				    
-				    printf("invalid offset! %d > %d IP size %d\n",(offset+total),rxringpayload[rxringconsumed],total);
-				    
+				if ((int)(offset+total)>rxringpayload[rxringconsumed]) {				    
+				    printf("invalid offset! %d > %d IP size %d\n",(offset+total),rxringpayload[rxringconsumed],total);				    
 				    break;
 				}
 				pthread_mutex_lock(&raw_mutex);
 				ret = write(tunnel->fd,ptr+offset,total);
+				if (ret<0) {
+				    perror("tunnel write error #1\n");
+				    printf("error details: %d,%d\n",offset,total);
+				    break;
+				}
 				pthread_mutex_unlock(&raw_mutex);
 
-				if (ret<0)
-				    printf("tunnel write error #1\n");
-				
 				offset += total;
 				
-				/* This is correct */
+				/* This is correct, finished processing packed data */
 				if ((int)offset == rxringpayload[rxringconsumed])
 				    break;
 				if ((int)offset > rxringpayload[rxringconsumed]) {
 				    printf("invalid offset! %d+%d > %d\n",offset,total,rxringpayload[rxringconsumed]);
+				    break;
 				}
 				
 			    }
@@ -329,7 +341,6 @@ static void *thr_rx(void *threadid)
 			    if (ret<0)
 			        printf("tunnel write error #2\n");
 			}
-
 		        break;
 	    	    }
 		}
