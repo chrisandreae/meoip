@@ -1,7 +1,7 @@
 AUTOMAKE_OPTIONS = subdir-objects
 ACLOCAL_AMFLAGS = ${ACLOCAL_FLAGS}
 
-bin_PROGRAMS = meoip vip smpls
+bin_PROGRAMS = meoip vip
 
 meoip_SOURCES = meoip.c minIni.c
 
