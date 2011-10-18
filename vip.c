@@ -315,12 +315,13 @@ static void *thr_rx(void *threadid)
 				}
 				pthread_mutex_lock(&raw_mutex);
 				ret = write(tunnel->fd,ptr+offset,total);
+				pthread_mutex_unlock(&raw_mutex);
 				if (ret<0) {
 				    perror("tunnel write error #1\n");
 				    printf("error details: %d,%d\n",offset,total);
 				    break;
 				}
-				pthread_mutex_unlock(&raw_mutex);
+				
 
 				offset += total;
 				
