@@ -10,6 +10,7 @@ AC_CONFIG_HEADERS([config.h])
 #CFLAGS=-O3
 # Checks for programs.
 AC_PROG_CC
+AM_PROG_CC_C_O
 
 AM_INIT_AUTOMAKE([1.10 no-define])                                                                                                                                                                        
 
