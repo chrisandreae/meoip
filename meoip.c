@@ -1,6 +1,6 @@
 /*
     file:   meoip.c
-    Authors: 
+    Authors:
     Linux initial code: Denys Fedoryshchenko aka NuclearCat <nuclearcat (at) nuclearcat.com>
     FreeBSD support: Daniil Kharun <harunaga (at) harunaga.ru>
 
@@ -18,504 +18,505 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.*
 */
 #ifndef __UCLIBC__
-#define _GNU_SOURCE 
+#define _GNU_SOURCE
 #endif
+
+#include <errno.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <errno.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netinet/if_ether.h>
-#include <net/ethernet.h>
-#ifdef __linux__
-#include <netinet/ether.h>
-#include <linux/if_tun.h>
-#endif
-#include <netinet/ip.h>
-#include <netinet/tcp.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/ioctl.h>
-#include <fcntl.h>
-#ifdef __FreeBSD__
-#include <net/if_tap.h>
-#endif
-#include <net/if.h>
-#include <poll.h>
 #include <unistd.h>
-#include <err.h>
-#include <signal.h>
-#include <assert.h>
-#include <pthread.h>
+
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#include <netinet/in.h>
+
 #include "minIni.h"
 #include "config.h"
 
-/* In theory maximum payload that can be handled is 65536, but if we use vectorized
-   code with preallocated buffers - it is waste of space, especially for embedded setup.
-   So if you want oversized packets - increase MAXPAYLOAD up to 65536 (or a bit less)
-   If you choice performance - more vectors, to avoid expensive context switches
-*/
+#include "gre_host.h"
+#include "tunnel.h"
 
-#define MAXPAYLOAD (2048)
-#define PREALLOCBUF 32
-#define MAXRINGBUF  64
 
-#define sizearray(a)  (sizeof(a) / sizeof((a)[0]))
+int gVerbose = 0;
+int gShuttingDown = 0;
+struct gre_host_list gHosts = {0};
 
-typedef struct
-{
-   struct sockaddr_in   daddr;
-   int                  id;
-   int                  fd;
-   struct ifreq		ifr;
-   char 		name[65];
-   int			cpu;
-}  Tunnel;
+/* 
+ * Maximum size of tunneled frame permitted by eoip protocol is 65535
+ * (uint16 size field). However, an ethernet frame is extremely
+ * unlikely to be this large: even jumbo frames are only 9000 bytes.
+ */
+#define MAXPAYLOAD 9000
 
-struct thr_rx
-{
-    int raw_socket;
-};
+/* RouterOS eoip protocol is GRE with protocol=0x6400, key=1, version
+   = 1, all other flags 0. 32 bit key is composed of 16 bit tunnelled
+   frame size (network order) and 16-bit tunnel ID (reverse network
+   orderx(!?))
+  */
+#define MIKROTIK_GRE_PROTO_ID 0x6400
+#define GRE_FLAG_KEY (1<<13)  /* bit 3 */
+#define GRE_FLAG_VERSION1 (1) /* bit 16 */
 
-struct thr_tx
-{
-    int raw_socket;
-    Tunnel *tunnel;
-    int cpu;
-};
+#define swap_bytes(x) ((((x) & 0xFF00) >> 8) | (((x) & 0xFF) << 8))
 
-int numtunnels;
-Tunnel *tunnels;
+struct proto_hdr{
+    uint16_t gre_flags;
+	uint16_t gre_protocol;
+    uint16_t data_size;
+    uint16_t tunnel_id;
+} __attribute__((packed));
 
-void term_handler(int s)
-{ 
-  int 		fd, i;
-  Tunnel	*tunnel;
+struct recv_hdr{
+    uint8_t ip[20];
+    struct proto_hdr hdr;
+} __attribute__((packed));
 
-  if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-    perror("socket() failed");
-    exit(-1);
-  }
 
-  for(i=0;i<numtunnels;i++)
-  {
-    tunnel = tunnels + i;
+/* inlined bsearch (from glibc) to minimise lookup work each frame.*/
+static inline const struct tunnel* tunnel_bsearch (const struct gre_host* h, const int tunnel_id) {
+	struct tunnel** const base = h->tunnels.tunnels;
+	const size_t nmemb = h->tunnels.count;
 
-#ifdef __FreeBSD__
-    if (ioctl(fd, SIOCIFDESTROY, &tunnel->ifr))
-    {
-      perror( "ioctl(SIOCIFDESTROY) failed");
-    }
-#endif
-    close(tunnel->fd);
-  }
+	size_t l, u, idx;
+	const struct tunnel* p;
+	int comparison;
 
-  close(fd);
-  exit(0);
+	l = 0;
+	u = nmemb;
+	while (l < u) {
+		idx = (l + u) / 2;
+		p = base[idx];
+		comparison = tunnel_id - p->id;
+		if (comparison < 0)
+			u = idx;
+		else if (comparison > 0)
+			l = idx + 1;
+		else
+			return p;
+	}
+
+	return NULL;
 }
 
-#ifdef __linux__
-int open_tun(Tunnel *tunnel)
-{
-    int fd;
-    
-    if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-      perror("socket() failed");
-      return 1;
-    }
-    if ( (tunnel->fd = open("/dev/net/tun",O_RDWR)) < 0)
-    {
-	perror("open_tun: /dev/net/tun error");
-	return 1;
-    }
+void *gre_host_transact(void* _host) {
+	const struct gre_host * const host = (const struct gre_host * const) _host;
 
-    memset(&tunnel->ifr, 0x0, sizeof(tunnel->ifr));
+	if(gVerbose){
+		printf("Started gre_host_transact thread for ");
+		gre_host_debug(stdout, host);
+		printf("\n");
+	}
 
-    tunnel->ifr.ifr_flags = IFF_TAP|IFF_NO_PI;
-    if (tunnel->name[0] != 0)
-	strncpy(tunnel->ifr.ifr_name, tunnel->name,IFNAMSIZ);
-    else
-	strncpy(tunnel->ifr.ifr_name, "eoip%d",IFNAMSIZ);
+	const int socket_fd = host->socket_fd;
+    const int gre_proto = htons(MIKROTIK_GRE_PROTO_ID);
 
-    if (ioctl(tunnel->fd, TUNSETIFF, (void *)&tunnel->ifr) < 0) {
-        perror("ioctl-1");
-        close(fd);
-        return 1;
-    }
+    uint8_t * const buf = malloc(MAXPAYLOAD);
 
-/*
-    if (ioctl(tunnel->fd, TUNGETIFF, (void *)&tunnel->ifr) < 0) {
-        perror("ioctlg-1");
-        close(fd);
-        return 1;
-    }
-*/
-
-    tunnel->ifr.ifr_flags |= IFF_UP;
-    tunnel->ifr.ifr_flags |= IFF_RUNNING;
-
-    if (ioctl(fd, SIOCSIFFLAGS, (void *)&tunnel->ifr) < 0) {
-        perror("ioctl-2");
-        close(fd);
-        return 1;
-    }
-    close(fd);
-    return 0;
-}
-
-#endif
-
-#ifdef __FreeBSD__
-
-int open_tun(Tunnel *tunnel)
-{
-    int fd;
-
-    if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-      perror("socket() failed");
-      return 1;
-    }
-
-    if ((tunnel->fd = open("/dev/tap", O_RDWR)) < 0) 
-    {
-	perror("open_tun: /dev/tap error");
-	return 1;
-    }
-
-    bzero(&tunnel->ifr, sizeof(tunnel->ifr));
-
-    if (ioctl(tunnel->fd, TAPGIFNAME, &tunnel->ifr)) 
-    {
-      perror( "ioctl(TAPGIFNAME) failed");
-      close(fd);
-      return 1;
-    }
-
-    tunnel->ifr.ifr_name[IFNAMSIZ-1] = 0;
-    tunnel->ifr.ifr_flags = IFF_UP | IFF_RUNNING;
-
-    if (ioctl(fd, SIOCSIFFLAGS, &tunnel->ifr)) 
-    {
-      perror( "ioctl(SIOCSIFFLAGS) failed");
-      close(fd);
-      return 1;
-    }
-
-    close(fd);
-    return 0;
-}
-#endif
-
-void *thr_rx(void *threadid)
-{
-    unsigned char *rxringbufptr[MAXRINGBUF];
-    int rxringpayload[MAXRINGBUF];
-    unsigned char *rxringbuffer;
-    int rxringbufused = 0, rxringbufconsumed;
-    unsigned char *ptr;
-    int i,ret;
-    struct thr_rx *thr_rx_data = (struct thr_rx*)threadid;
-    Tunnel *tunnel;
-    int raw_socket = thr_rx_data->raw_socket;
     fd_set rfds;
 
-#ifndef __UCLIBC__
-    cpu_set_t cpuset;
-    pthread_t thread = pthread_self();
-    int cpu=0;
+    while(1) {
+		/* block until we can read */
+		FD_ZERO(&rfds);
+		FD_SET(socket_fd, &rfds);
+		select(socket_fd+1, &rfds, NULL, NULL, NULL);
 
-    CPU_ZERO(&cpuset);
-    CPU_SET(cpu, &cpuset);
+		/*
+		  We want to pump from the OS read buffer to the OS write
+		  buffer as fast as possible. We don't want to introduce
+		  bufferbloat by adding an extra buffer to the system, so if we
+		  can't write something that we read we simply drop it and
+		  continue.
+		*/
+		while(1) {
+			int readsz = recv(socket_fd, buf, MAXPAYLOAD, 0);
+			if(readsz == -1) {
+				if(errno == EAGAIN) break;
+				else{
+					if(gShuttingDown) return NULL;
+					if(gVerbose) perror("GRE receive error");
+					break;
+				}
+			}
+			else if(readsz == 0) {
+				if(gVerbose) fprintf(stderr, "Impossible, read zero bytes from raw socket");
+				break;
+			}
+			else if(readsz < sizeof(struct recv_hdr)){
+				if(gVerbose) fprintf(stderr, "Bad GRE data: smaller than struct recv_hdr (%d bytes)", readsz);
+				continue;
+			}
 
-    ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-    if (ret)
-	printf("Affinity error %d\n",ret);
-    else
-	printf("RX thread set to cpu %d\n",cpu);
+			struct proto_hdr* hdr = &((struct recv_hdr*) buf)->hdr;
+			if(hdr->gre_protocol != gre_proto) {
+#ifndef NDEBUG
+				if(gVerbose >= 2){
+					fprintf(stderr, "Read GRE datagram with unexpected protocol: 0x%x, ignoring\n", ntohs(hdr->gre_protocol));
+				}
+#endif
+				continue;
+			}
+			unsigned short datagram_size = ntohs(hdr->data_size);
+			if(datagram_size + sizeof(struct recv_hdr) != readsz) {
+				if(gVerbose){
+					fprintf(stderr, "Read %d bytes from GRE but header claimed it should be %zu (%hu+%zu) bytes: discarding\n",
+							readsz, datagram_size + sizeof(struct recv_hdr), datagram_size, sizeof(struct recv_hdr));
+				}
+				continue;
+			}
+
+			/* tunnel id is (for unknown mikrotik reasons)
+			   little-endian (*opposite* to network order) */
+			unsigned short tunnel_id = ntohs(hdr->tunnel_id);
+			tunnel_id = swap_bytes(tunnel_id);
+
+			/* look up the tunnel that corresponds to tunnel_id */
+			const struct tunnel* tun = tunnel_bsearch(host, tunnel_id);
+			if(tun == NULL){
+#ifndef NDEBUG
+				if(gVerbose){
+					fprintf(stderr, "Unmatched tunnel id %d from host ", tunnel_id);
+					gre_host_debug(stderr, host);
+					fprintf(stderr, ".\n");
+				}
+#endif
+				continue;
+			}
+
+#ifndef NDEBUG
+			if(gVerbose >= 3){
+				gre_host_debug(stderr, host);
+				fprintf(stderr, " => %s\n", tun->name);
+			}
 #endif
 
-    rxringbuffer = malloc(MAXPAYLOAD*MAXRINGBUF);
-    if (!rxringbuffer) {
-	perror("malloc()");
-	exit(1);
-    }
-    /* Temporary code*/
-    for (i=0;i<MAXRINGBUF;i++) {
-	rxringbufptr[i] = rxringbuffer+(MAXPAYLOAD*i);
-    }
-
-    while(1) {
-           FD_ZERO(&rfds);
-           FD_SET(raw_socket, &rfds);
-           ret = select(raw_socket+1, &rfds, NULL, NULL, NULL);
-
-	    assert(rxringbufused == 0);
-	    while (rxringbufused < MAXRINGBUF) {
-		rxringpayload[rxringbufused] = read(raw_socket,rxringbufptr[rxringbufused],MAXPAYLOAD);
-		if (rxringpayload[rxringbufused] < 0)
-		    break;
-
-		if (rxringpayload[rxringbufused] >= 28)
-		    rxringbufused++;
-	    }
-
-	    if (!rxringbufused)
-		continue;
-
-	    rxringbufconsumed = 0;
-	    do {
-		ptr = rxringbufptr[rxringbufconsumed];
-		ret = 0;
-		/* TODO: Optimize search of tunnel id */
-        	for(i=0;i<numtunnels;i++)
-        	{
-	    	    tunnel=tunnels + i;		    
-            	    if (ptr[26] == (unsigned char )(tunnel->id & 0xFF) && ptr[27] == (unsigned char )(((tunnel->id & 0xFF00) >> 8)))
-	    	    {
-			ret = write(tunnel->fd,ptr+28,rxringpayload[rxringbufconsumed]-28);
-		        break;
-	    	    }
+			int r = write(tun->tun_fd, buf + sizeof(struct recv_hdr), readsz - sizeof(struct recv_hdr));
+			if(r == -1) {
+				if(errno == EAGAIN) {
+					break;
+				}
+				else{
+					perror("Couldn't write to tunnel device");
+				}
+			}
 		}
-		// debug
-		//if (ret == 0)
-		//    printf("Invalid ID received on gre\n");
-		rxringbufconsumed++;
-	    } while (rxringbufconsumed < rxringbufused);
-	    rxringbufused -= rxringbufconsumed;
-	    if (rxringbufused) {
-		memmove(&rxringpayload[0],&rxringpayload[rxringbufconsumed],rxringbufused);
-	    }
-
     }
-    return(NULL);    
+    return 0;
 }
 
-void *thr_tx(void *threadid)
-{
-    struct thr_tx *thr_tx_data = (struct thr_tx*)threadid;
-    Tunnel *tunnel = thr_tx_data->tunnel;
-    int fd = tunnel->fd;
-    int raw_socket = thr_tx_data->raw_socket;
-    unsigned char *ip = malloc(MAXPAYLOAD+8); /* 8-byte header of GRE, rest is payload */
-    int payloadsz;
-    unsigned char *payloadptr = ip+8;
-    struct sockaddr_in daddr;
+void *tunnel_transact(void *_tunnel) {
+    const struct tunnel * const tunnel = (const struct tunnel* const)_tunnel;
+	
+	if(gVerbose){
+		printf("Started tunnel_transact thread for %s (in host %p)\n", tunnel->name, tunnel->dest);
+	}
+
+    const int fd = tunnel->tun_fd;
+    const int raw_socket = tunnel->dest->socket_fd;
+
+    unsigned char * const buf = malloc(MAXPAYLOAD + sizeof(struct proto_hdr));
+    struct proto_hdr * const hdr = (struct proto_hdr*) buf;
+    unsigned char * const dataptr = buf + sizeof(struct proto_hdr);
+
     int ret;
     fd_set rfds;
 
-#ifndef __UCLIBC__    
-    int cpu = thr_tx_data->cpu;
-    cpu_set_t cpuset;
-    pthread_t thread = pthread_self();
+    /* initialize protocol header */
+    memset(buf, 0x0, sizeof(struct proto_hdr));
 
-    CPU_ZERO(&cpuset);
-    CPU_SET(cpu, &cpuset);
-
-    ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-    if (ret)
-	printf("Affinity error %d\n",ret);
-    else
-	printf("TX thread(ID %d) set to cpu %d\n",tunnel->id,cpu);
-#endif
-    memset(ip,0x0,20);
-
-    // GRE info?
-    ip[0] = 0x20;
-    ip[1] = 0x01;
-    ip[2] = 0x64;
-    ip[3] = 0x00;
+	hdr->gre_flags    = htons(GRE_FLAG_KEY | GRE_FLAG_VERSION1);
+    hdr->gre_protocol = htons(MIKROTIK_GRE_PROTO_ID);
+    hdr->tunnel_id    = htons(tunnel->id); 
+    hdr->tunnel_id    = swap_bytes(hdr->tunnel_id); /* tunnel id is little-endian: opposite to network order */
 
     while(1) {
-        FD_ZERO(&rfds);
-        FD_SET(fd, &rfds);
-        ret = select(fd+1, &rfds, NULL, NULL, NULL);
+		FD_ZERO(&rfds);
+		FD_SET(fd, &rfds);
+		ret = select(fd+1, &rfds, NULL, NULL, NULL);
 
-	payloadsz = read(fd,payloadptr,MAXPAYLOAD);
-	if (payloadsz < 0)
-	    continue;
-	ip[4] = (unsigned char)((payloadsz & 0xFF00) >> 8);
-	ip[5] = (unsigned char)(payloadsz & 0xFF);
+		while(1) {
+			int readsz = read(fd, dataptr, MAXPAYLOAD);
+			if(readsz == -1) {
+				if(errno == EAGAIN) break;
+				else{
+					if(gShuttingDown) return NULL;
+					perror("TAP device receive error");
+					break;
+				}
+			}
+			else if(readsz == 0) {
+				perror("impossible, read nothing from TAP device!");
+				break;
+			}
+			hdr->data_size = htons(readsz);
 
-	// tunnel id
-	ip[6] = (unsigned char )(tunnel->id & 0xFF);
-	ip[7] = (unsigned char )((tunnel->id & 0xFF00) >> 8);
+#ifndef NDEBUG
+			if(gVerbose >= 3){
+				fprintf(stderr, "%s => ", tunnel->name);
+				gre_host_debug(stderr, tunnel->dest);
+				fprintf(stderr, "\n");
+			}
+#endif
 
-	if(sendto(raw_socket, ip, payloadsz+8, 0,(struct sockaddr *)&tunnel->daddr, (socklen_t)sizeof(daddr)) < 0)
-	    perror("send() err");
+			ret = send(raw_socket, buf, readsz + sizeof(struct proto_hdr), 0);
+			if(ret == -1) {
+				if(errno == EAGAIN){
+					/* Silently drop frame, buffer is full. */
+					break;
+				}
+				else{
+					fprintf(stderr, "Error writing to raw socket (%d): %s\n", raw_socket, strerror(errno));
+					break;
+				}
+			}
+		}
     }
-    return(NULL);    
+    return(NULL);
+}
+
+void add_new_tunnel(char* name, char* dest, char* bind, int tunnel_id) {
+	struct gre_host* host = gre_host_for_name(dest, bind);
+	struct tunnel* tun = tunnel_new(name, tunnel_id, host);
+
+	gre_host_add_new_tunnel(host, tun);
+}
+
+/* take and parse target host argument */
+void load_tunnel_from_argument(const char* arg) {
+	char* buf;
+	asprintf(&buf, "%s", arg);
+	char* next = buf;
+
+	char* name = next;
+	next = index(next, '/');
+	if(next == NULL){
+		fprintf(stderr, "Failed to parse tunnel specifier \"%s\" (no host found)\n", arg);
+		exit(1);
+	}
+	*next++ = '\0';
+
+	char* host = next;
+	next = index(next, '/');
+	if(next == NULL){
+		fprintf(stderr, "Failed to parse tunnel specifier \"%s\" (no id found)\n", arg);
+		exit(1);
+	}
+	*next++ = '\0';
+
+	char* id_s = next;
+	char* ep;
+	int id = strtol(id_s, &ep, 10);
+	if(*ep != '\0'){
+		fprintf(stderr, "Failed to parse tunnel specifier \"%s\": bad tunnel id \"%s\"\n", arg, id_s);
+		exit(1);
+	}
+
+	add_new_tunnel(name, host, NULL, id);
+	free(buf);
+}
+
+void load_tunnels_from_config(const char* configname) {
+    struct stat mystat;
+    if (stat(configname,&mystat)) {
+		perror("Config file error");
+		fprintf(stderr, "Filename: %s\n", configname);
+		exit(1);
+    }
+
+    char sectionname[IFNAMSIZ];
+	int sn;
+    for (sn = 0; ini_getsection(sn, sectionname, sizeof(sectionname), configname) > 0; sn++) {
+		char dest[256];
+		char bind[256];
+
+		/* read id */
+        int id = (int) ini_getl(sectionname,"id",-1,configname);
+		if(id == -1){
+			fprintf(stderr, "Required field 'id' missing for tunnel %s\n", sectionname);
+			exit(1);
+		}
+
+		/* read destination */
+		if (ini_gets(sectionname, "dst", "", dest, sizeof(dest), configname) < 1) {
+			fprintf(stderr, "Required field 'dst' missing for tunnel %s\n", sectionname);
+			exit(1);
+		}
+
+		/* read source */
+		ini_gets(sectionname, "bind", "", bind, sizeof(bind), configname);
+
+		if(gVerbose){
+			printf("Creating tunnel: name=%s dst=%s id=%d", sectionname, dest, id);
+			if(bind[0] != '\0'){
+				printf(" src=%s", bind);
+			}
+			printf("\n");
+		}
+
+		add_new_tunnel(sectionname, dest, bind, id);
+    }
+}
+
+void open_connections(){
+	int i;
+	for(i = 0; i < gHosts.count; ++i){
+		struct gre_host* host = gHosts.hosts[i];
+		gre_host_connect(host);
+	}
+}
+
+void close_connections(){
+	/* call only once, even if fired by multiple signal handlers */
+	static int closed = 0;
+	if(closed) return;
+	closed = 1;
+
+	if(gVerbose){
+		printf("Shutting down connections\n");
+	}
+
+	int i;
+	for(i = 0; i < gHosts.count; ++i){
+		struct gre_host* host = gHosts.hosts[i];
+		gre_host_disconnect(host);
+	}
+}
+
+void term_handler(int s)
+{
+	gShuttingDown = 1;
+	close_connections();
+	exit(0);
+}
+
+void printusage(){
+    fprintf(stderr, "Mikrotik EoIP %s\n",PACKAGE_VERSION);
+    fprintf(stderr, "git@beep.gen.nz:meoip\n");
+    fprintf(stderr, "Usage: meoip [OPTIONS]\n");
+    fprintf(stderr, " -h\t\tPrint this help message.\n");
+    fprintf(stderr, " -F\t\tRun in foreground.\n");
+    fprintf(stderr, " -v\t\tVerbose\n");
+    fprintf(stderr, " -f configfile\tConfig file path\n");
+    fprintf(stderr, " -t name/host/id\tSpecify tunnel on command line\n");
+    fprintf(stderr, " -p pidfile\tOutput to alternate pid file\n");
 }
 
 int main(int argc,char **argv)
 {
-    struct thr_rx thr_rx_data;
-    struct thr_tx *thr_tx_data;
+    /* defaults */
+    int background   = 1;
+    char *pidfile    = NULL;
 
-    int ret, i, sn,rc;
-//    struct pollfd pollfd[argc-1];
-    Tunnel *tunnel;
+	int configured = 0;
+
+    const char* defaultcfgname = "/etc/meoip.cfg";
+
+    /* parse options */
+    char opt;
+    while((opt = getopt(argc, argv, "hFvf:t:p:b:")) != -1) {
+		switch(opt) {
+		case 'h':
+			printusage();
+			exit(0);
+		case 'F': 
+			background = 0;
+			break;
+		case 'v':
+			gVerbose++;
+			break;
+		case 'p':
+			if(pidfile){
+				fprintf(stderr, "-<pidfile> p may be specified only once.\n");
+				exit(1);
+			}
+			asprintf(&pidfile, "%s", optarg);
+			break;
+		case 't':
+			load_tunnel_from_argument(optarg);
+			configured = 1;
+			break;
+		case 'f':
+			load_tunnels_from_config(optarg);
+			configured = 1;
+			break;
+		default:
+			fprintf(stderr, "Unrecognised command line argument: %c\n", opt);
+			exit(1);
+		}
+    }
+    
+	/* if not configured, try default config file */
+	if(!configured){
+		load_tunnels_from_config(defaultcfgname);
+	}
+	/* open sockets and tunnel devices */
+    open_connections();
+
+    /* register signal handler */
     struct sigaction sa;
-    struct stat mystat;
-    char section[IFNAMSIZ];
-    char strbuf[256];
-    char *configname;
-    char defaultcfgname[] = "/etc/meoip.cfg";
-    pthread_t *threads;
-    pthread_attr_t attr;
-    void *status;
-    int optval=262144;
-    FILE *mfd;    
-    char *pidfile;
-
-    printf("Mikrotik EoIP %s\n",PACKAGE_VERSION);
-    printf("(c) Denys Fedoryshchenko <nuclearcat@nuclearcat.com>\n");
-    printf("Tip: %s [configfile [bindip]]\n",argv[0]);
-
-    thr_rx_data.raw_socket = socket(PF_INET, SOCK_RAW, 47);
-    if(setsockopt (thr_rx_data.raw_socket, SOL_SOCKET, SO_RCVBUF, &optval, sizeof (optval)))
-	perror("setsockopt(RCVBUF)");
-    if(setsockopt (thr_rx_data.raw_socket, SOL_SOCKET, SO_SNDBUF, &optval, sizeof (optval)))
-	perror("setsockopt(SNDBUF)");
-
-    
-    if (argc == 3) {
-	struct sockaddr_in serv_addr;
-	serv_addr.sin_family = AF_INET;
-	if (!inet_pton(AF_INET, argv[2], (struct in_addr *)&serv_addr.sin_addr.s_addr)) {
-	    perror("bind address invalid");
-	    exit(-1);
-	}
-	serv_addr.sin_port = 0;
-	if (bind(thr_rx_data.raw_socket, (struct sockaddr *) &serv_addr,
-		sizeof(serv_addr)) < 0)
-	{
-	    perror("bind error");
-	    exit(-1);
-	}
-    }
-
-    if (argc == 1) {
-	configname = defaultcfgname;
-    } else {
-	configname = argv[1];
-    }
-
-    if (stat(configname,&mystat)) {
-	    perror("config file error");
-	    printf("Filename: %s\n",configname);
-
-	    /* TODO: Check readability */
-	    exit(-1);
-    }
-
-    for (sn = 0; ini_getsection(sn, section, sizearray(section), configname) > 0; sn++) {
-	numtunnels++;
-     }
-
-    tunnels = malloc(sizeof(Tunnel)*numtunnels);
-//    assert(tunnels, "malloc()");
-    memset(tunnels,0x0,sizeof(Tunnel)*numtunnels);
-
-    for (sn = 0; ini_getsection(sn, section, sizearray(section), configname) > 0; sn++) {
-	tunnel = tunnels + sn;
-	printf("Creating tunnel: %s num %d\n", section,sn);
-
-	if (strlen(section)>64) {
-	    printf("Name of tunnel need to be shorter than 64 symbols\n");
-	    exit(-1);
-	}
-	strncpy(tunnel->name,section,64);
-
-
-	tunnel->daddr.sin_family = AF_INET;
-	tunnel->daddr.sin_port = 0;
-	if (ini_gets(section,"dst","0.0.0.0",strbuf,sizeof(strbuf),configname) < 1) {
-	    printf("Destination for %s not correct\n",section);
-	} else {
-	    printf("Destination for %s: %s\n",section,strbuf);
-	}
-
-    	if (!inet_pton(AF_INET, strbuf, (struct in_addr *)&tunnel->daddr.sin_addr.s_addr))
-	{
-	    warn("Destination \"%s\" is not correct\n", strbuf);
-	    exit(-1);
-	}
-	memset(tunnel->daddr.sin_zero, 0x0,sizeof(tunnel->daddr.sin_zero));
-	tunnel->id = (int)ini_getl(section,"id",0,configname);
-	/* TODO: What is max value of tunnel? */
-	if (tunnel->id == 0 || tunnel->id > 65536) {
-	    warn("ID of \"%d\" is not correct\n", tunnel->id);
-	    exit(-1);
-	}
-
-     }
-    
-
-    if (thr_rx_data.raw_socket == -1) {
-	perror("raw socket error():");
-	exit(-1);
-    }
-    fcntl(thr_rx_data.raw_socket, F_SETFL, O_NONBLOCK);
-
-
-
-    for(i=0;i<numtunnels;i++)
-    {
-      tunnel = tunnels + i;
-
-      if ( open_tun(tunnel) ) {
-        exit(-1);
-      }
-    }
-
-
     memset(&sa, 0x0, sizeof(sa));
     sa.sa_handler = term_handler;
-    sigaction( SIGTERM , &sa, 0);
-    sigaction( SIGINT , &sa, 0);
+    sigaction(SIGTERM, &sa, 0);
+    sigaction(SIGINT,  &sa, 0);
 
-    threads = malloc(sizeof(pthread_t)*(numtunnels+1));
 
     /* Fork after creating tunnels, useful for scripts */
-    ret = daemon(1,1);
-    
-    if (asprintf(&pidfile,"/var/run/eoip-%s",basename(configname)) == -1)
-	exit(1);
-    
-    mfd = fopen(pidfile,"w");
-    fprintf(mfd,"%d",getpid());
-    fclose(mfd);
-
-
-    /* structure of Mikrotik EoIP:
-	... IP header ...
-	4 byte - GRE info
-	2 byte - tunnel id
-    */
-
-
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-
-    rc = pthread_create(&threads[0], &attr, thr_rx, (void *)&thr_rx_data);
-
-    for(i=0;i<numtunnels;i++)
-    {
-      tunnel=tunnels + i;
-        fcntl(tunnel->fd, F_SETFL, O_NONBLOCK);
-	/* Allocate for each thread */
-	thr_tx_data = malloc(sizeof(struct thr_tx));
-        thr_tx_data->tunnel = tunnel;
-	thr_tx_data->cpu = i+1;
-        thr_tx_data->raw_socket = thr_rx_data.raw_socket;
-        rc = pthread_create(&threads[0], &attr, thr_tx, (void *)thr_tx_data);
+    if(background) {
+		int ret = daemon(1, 1);
+		if(ret != 0) {
+			perror("Daemon failed");
+			exit(ret);
+		}
     }
 
-    rc = pthread_join(threads[0], &status);
+    /* output pid file */
+	{
+		if(!pidfile) {
+			int ret = asprintf(&pidfile, "/var/run/meoip");
+			if(ret == -1) {
+				fprintf(stderr, "Error allocating pid file name\n");
+				exit(1);
+			}
+		}
 
-    return(0);
+		FILE* mfd = fopen(pidfile, "w");
+		free(pidfile); /* always heap-allocated */
+		if(mfd == NULL) {
+			fprintf(stderr, "Error opening pid file %s (%s)\n", pidfile, strerror(errno));
+		}
+		fprintf(mfd,"%d",getpid());
+		fclose(mfd);
+	}
+
+    /* set up threads */
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+	
+	int i, j, rc;
+	pthread_t thread;
+	for(i = 0; i < gHosts.count; ++i){
+		struct gre_host* host = gHosts.hosts[i];
+		rc = pthread_create(&thread, &attr, gre_host_transact, (void*) host);
+		if(rc != 0){
+			fprintf(stderr, "Couldn't start transmit thread for host ");
+			gre_host_debug(stderr, host);
+			fprintf(stderr, "\n");
+			exit(1);
+		}
+		for(j = 0; j < host->tunnels.count; ++j){
+			rc = pthread_create(&thread, &attr, tunnel_transact, (void*) host->tunnels.tunnels[j]);
+			if(rc != 0){
+				fprintf(stderr, "Couldn't start receive thread for tunnel %s\n", host->tunnels.tunnels[j]->name);
+				exit(1);
+			}
+		}
+	}
+	pthread_join(thread, 0); /* join the last thread to be created (as
+								no threads will ever exit, effectively
+								block forever) */
+	exit(0);
 }

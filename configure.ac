@@ -1,13 +1,13 @@
 #                                               -*- Autoconf -*-
 # Process this file with autoconf to produce a configure script.
 
-AC_PREREQ(2.65)
+AC_PREREQ(2.61)
 AC_INIT([MEOIP],[0.4],[Denys Fedoryshchenko <denys@visp.net.lb>])
 AC_CONFIG_SRCDIR([minIni.h])
 AC_CONFIG_HEADERS([config.h])
 
 
-#CFLAGS=-O3
+CFLAGS=-O0 -g
 # Checks for programs.
 AC_PROG_CC
 AM_PROG_CC_C_O
@@ -15,12 +15,10 @@ AM_PROG_CC_C_O
 AM_INIT_AUTOMAKE([1.10 no-define])                                                                                                                                                                        
 
 # Checks for libraries.
-#AC_CHECK_LIB(pthread, pthread_create)
 AC_CHECK_LIB(pthread, pthread_create, [LIBS="$LIBS -lpthread"])
-AC_CHECK_LIB(lzo2, lzo1x_decompress)
 
 # Checks for header files.
-AC_CHECK_HEADERS([arpa/inet.h fcntl.h netinet/in.h stdlib.h string.h sys/ioctl.h sys/socket.h unistd.h])
+AC_CHECK_HEADERS([fcntl.h netinet/in.h stdlib.h string.h sys/ioctl.h sys/socket.h unistd.h])
 
 # Checks for typedefs, structures, and compiler characteristics.
 AC_HEADER_STDBOOL

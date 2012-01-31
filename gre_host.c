@@ -1,0 +1,273 @@
+#include "gre_host.h"
+#include "tunnel.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <search.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <sys/types.h>
+#include <sys/socket.h>
+
+extern int gVerbose;
+
+struct gre_host* gre_host_alloc(){						
+	struct gre_host* n = malloc(sizeof(struct gre_host));	
+	memset(n, 0x0, sizeof(struct gre_host));		
+	return n;								
+}
+
+int gre_host_compar(const void* _key, const void* _host){
+	struct gre_host* key  = *(struct gre_host**) _key;
+	struct gre_host* host = *(struct gre_host**) _host;
+	if(key->addr_len != host->addr_len)
+		return key->addr_len - host->addr_len;
+
+	int ac = memcmp(&key->addr, &host->addr, host->addr_len);
+	if(ac != 0) return ac;
+
+	if(key->bind_addr_len != host->bind_addr_len)
+		return key->bind_addr_len - host->bind_addr_len;
+
+	if(key->bind_addr_len == 0) /* no bind addr to compare */
+		return 0;
+
+	return memcmp(&key->bind_addr, &host->bind_addr, host->bind_addr_len);
+}
+
+int addr_is_wildcard(const struct sockaddr* addr, size_t addr_len){
+	if(addr_len == 0) return 1;
+
+	switch(addr->sa_family){
+	case AF_INET:
+		return ((struct sockaddr_in*)addr)->sin_addr.s_addr == INADDR_ANY;
+	case AF_INET6:
+		return 0 == memcmp(&(((struct sockaddr_in6*)addr)->sin6_addr), &in6addr_any, sizeof(struct in6_addr));
+	default:
+		fprintf(stderr, "Unknown address family %d\n", addr->sa_family);
+		exit(1); 
+	}
+	return 0;
+}
+
+/* is it an error to have two connections to the same dest addr with
+    different bind addrs?  No, we may need to make sure our source
+    addr is specifically what the other side wants.  However it should
+    be an error to have a catch-all on a host and also a specifically
+    bound source address, since then both sockets will get the
+    messages.  or we just cope with that I guess? (drop as
+    appropriate?)
+ */
+int gre_host_check_srcconflict(const void* _key, const void* _host){
+	struct gre_host* key  = *(struct gre_host**) _key;
+	struct gre_host* host = *(struct gre_host**) _host;
+
+	if(key->addr_len != host->addr_len)
+		return 1;
+	
+	if(0 != memcmp(&key->addr, &host->addr, host->addr_len))
+		return 1;
+	
+	int key_wc  = addr_is_wildcard((struct sockaddr*)&key->bind_addr,  key->bind_addr_len);
+	int host_wc = addr_is_wildcard((struct sockaddr*)&host->bind_addr, host->bind_addr_len);
+
+	return key_wc == host_wc; /* returns 0 if not equal => conflict */
+}
+
+void gre_host_debug(FILE* stream, const struct gre_host* g){
+	char abuf[64], bbuf[64];
+	getnameinfo((struct sockaddr*)&g->addr, g->addr_len, abuf, sizeof(abuf), 0, 0, NI_NUMERICHOST);
+	if(g->bind_addr_len){
+		getnameinfo((struct sockaddr*)&g->bind_addr, g->bind_addr_len, bbuf, sizeof(bbuf), 0, 0, NI_NUMERICHOST);
+	}
+	else{
+		sprintf(bbuf, "<any>");
+	}
+	fprintf(stream, "[%s -> %s]@%p", bbuf, abuf, g);
+}
+
+
+struct gre_host* gre_host_for_addr(const struct sockaddr* dest_addr, size_t dest_addr_len,
+								   const struct sockaddr* bind_addr, size_t bind_addr_len){
+	struct gre_host* g = gre_host_alloc();
+	memcpy(&g->addr, dest_addr, dest_addr_len);
+	g->addr_len = dest_addr_len;
+
+	if(bind_addr_len){
+		memcpy(&g->bind_addr, bind_addr, bind_addr_len);
+		g->bind_addr_len = bind_addr_len;
+	}
+
+	/* Restriction: we don't permit multiple hosts with the same
+	   destination and both bound and unbound source addresses, as
+	   that would result in the same traffic going to both hosts 
+	*/
+   	struct gre_host** srcConflict = (struct gre_host**) lfind(&g, gHosts.hosts, &gHosts.count,
+										 sizeof(struct gre_host*), gre_host_check_srcconflict);
+	if(srcConflict != NULL){
+		fprintf(stderr, "Tunnel conflict: must not have two tunnels to the same destination"
+				" where one is bound to a local address and the other is not.\n");
+		exit(1);
+	}
+	
+	/* make space if necessary */
+	if(gHosts.count == gHosts.len){
+		gHosts.len = (gHosts.len * 2 + 1);
+		gHosts.hosts = realloc(gHosts.hosts, sizeof(struct gre_host*) * gHosts.len);
+	}
+	/* lsearch appends if not found, returns entry. */
+	struct gre_host* loc = *(struct gre_host**) lsearch(&g, gHosts.hosts, &gHosts.count, sizeof(struct gre_host*), gre_host_compar);
+
+	/* if already present, free */
+	if(loc != g) free(g);
+
+	if(gVerbose >= 2){
+		printf("Adding to %s GRE host: ", loc == g ? "new" : "old");
+		gre_host_debug(stdout, loc);
+		printf("\n");
+	}
+	return loc;
+}
+
+struct gre_host* gre_host_for_name(char* dest, char* bind){
+	struct addrinfo hints;
+
+	/* look up the bind address, if specified */
+	struct addrinfo* bind_addrinfo = 0;
+	struct sockaddr* bind_addr = 0;
+	int bind_addrlen = 0;
+	if(bind && bind[0] != '\0'){
+		memset(&hints, 0x0, sizeof(hints));
+		hints.ai_flags = AI_NUMERICHOST;
+		int r = getaddrinfo(bind, NULL, &hints, &bind_addrinfo);
+		if(r != 0){
+			fprintf(stderr, "Address lookup of \"%s\" failed - not a valid IP address? (%s)\n",
+					bind,
+					r == EAI_SYSTEM ? strerror(errno) : gai_strerror(r));
+		}
+		bind_addr = bind_addrinfo->ai_addr;
+		bind_addrlen = bind_addrinfo->ai_addrlen;
+	}
+
+    /* Look up the destination address */
+    memset(&hints, 0x0, sizeof(hints));
+    hints.ai_socktype = AF_INET; /* ipv4 only */
+    struct addrinfo* res;
+
+    /* Assume that the first struct returned is appropriate, as we're
+	   asking for ipv4 only (TODO: ipv6) */
+    int r = getaddrinfo(dest, NULL, &hints, &res);
+    if(r != 0) {
+		fprintf(stderr, "DNS resolution of \"%s\" failed: %s\n",
+				dest,
+				r == EAI_SYSTEM ? strerror(errno) : gai_strerror(r));
+    }
+
+	/* look up the host by address and return */
+	struct gre_host* host = gre_host_for_addr(res->ai_addr, res->ai_addrlen,
+											  bind_addr, bind_addrlen);
+    freeaddrinfo(res);
+	if(bind_addrinfo) freeaddrinfo(bind_addrinfo);
+	return host;
+}
+
+struct tunnel* gre_host_add_new_tunnel(struct gre_host* host, struct tunnel* tun){
+	if(host->tunnels.count == host->tunnels.len){
+		host->tunnels.len = host->tunnels.len * 2 + 1;
+		host->tunnels.tunnels = realloc(host->tunnels.tunnels,
+										sizeof(struct tunnel*) * host->tunnels.len);
+	}
+	struct tunnel* t = *(struct tunnel**) lsearch(&tun, host->tunnels.tunnels, &host->tunnels.count,
+												sizeof(struct tunnel*), tunnel_compar);
+	if(t != tun){
+		fprintf(stderr, "Warning: ignored duplicate tunnel %s (id %d, same as %s) for host ",
+				tun->name, t->id, t->name);
+		gre_host_debug(stderr, host);
+		fprintf(stderr, "\n");
+		free(tun);
+	}
+	else if(gVerbose >= 2){
+		printf("Added new tunnel %s (id %d) to host ", t->name, t->id);
+		gre_host_debug(stdout, host);
+		printf("\n");
+	}
+
+	return t;
+}
+
+void gre_host_connect(struct gre_host* host){
+	int j;
+
+	/* sort for binary search on receive */
+	qsort(host->tunnels.tunnels, host->tunnels.count, sizeof(struct tunnel*), tunnel_compar);
+
+	gre_host_open_socket(host);
+
+	for(j = 0; j < host->tunnels.count; ++j){
+		tunnel_open(host->tunnels.tunnels[j]);
+	}
+}
+
+void gre_host_disconnect(struct gre_host* host){
+	int j;
+
+	gre_host_close_socket(host);
+
+	for(j = 0; j < host->tunnels.count; ++j){
+		tunnel_close(host->tunnels.tunnels[j]);
+		free(host->tunnels.tunnels[j]);
+	}
+
+	free(host->tunnels.tunnels);
+	free(host);
+}
+
+/* Create the socket */
+void gre_host_open_socket(struct gre_host* host){
+	host->socket_fd = socket(host->addr.ss_family, SOCK_RAW, IPPROTO_GRE);
+	if(gVerbose >= 3){
+		printf("Opened raw socket %d for host ", host->socket_fd);
+		gre_host_debug(stdout, host);
+		printf("\n");
+	}
+	if(host->socket_fd == -1){
+		perror("Error opening GRE socket: ");
+		exit(1);
+	}
+
+    /* Do we want to consider setting the buffer sizes to the BDP,
+	   remembering that we are a tunnel, and therefore the connections
+	   going over us will be independently buffered. Real question is
+	   whether adjusting buffers here allows us to usefully employ
+	   knowledge about the capacity/rtt of our link.
+	*/
+    /* int optval=262144; */
+	/*     if(setsockopt (raw_socket, SOL_SOCKET, SO_RCVBUF, &optval, sizeof (optval))) */
+	/* 	perror("setsockopt(RCVBUF)"); */
+	/*     if(setsockopt (raw_socket, SOL_SOCKET, SO_SNDBUF, &optval, sizeof (optval))) */
+	/* 	perror("setsockopt(SNDBUF)"); */
+
+	if(host->bind_addr_len > 0){
+		if(bind(host->socket_fd, (const struct sockaddr*) &host->bind_addr, host->bind_addr_len) == -1){
+			perror("Error binding GRE socket: ");
+			exit(1);
+		}
+	}
+	if(connect(host->socket_fd, (const struct sockaddr*) &host->addr, host->addr_len) == -1){
+		perror("Error connecting GRE socket: ");
+		exit(1);
+	}
+	if(fcntl(host->socket_fd, F_SETFL, O_NONBLOCK) == -1){
+		perror("Could not set GRE socket non-blocking: ");
+		exit(1);
+	}
+}
+
+void gre_host_close_socket(struct gre_host* host){
+	close(host->socket_fd);
+	host->socket_fd = 0;
+}
