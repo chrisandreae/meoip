@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.61)
-AC_INIT([MEOIP],[0.4],[Denys Fedoryshchenko <denys@visp.net.lb>])
+AC_INIT([MEOIP2],[0.9],[Chris Andreae <chris@andreae.gen.nz>])
 AC_CONFIG_SRCDIR([minIni.h])
 AC_CONFIG_HEADERS([config.h])
 

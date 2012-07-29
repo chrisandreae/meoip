@@ -1,6 +1,8 @@
 /*
     file:   meoip.c
+
     Authors:
+    MEoIP2 fork: Chris Andreae <chris (at) andreae.gen.nz>
     Linux initial code: Denys Fedoryshchenko aka NuclearCat <nuclearcat (at) nuclearcat.com>
     FreeBSD support: Daniil Kharun <harunaga (at) harunaga.ru>
 
@@ -394,7 +396,7 @@ void term_handler(int s)
 
 void printusage(){
     fprintf(stderr, "Mikrotik EoIP %s\n",PACKAGE_VERSION);
-    fprintf(stderr, "git@beep.gen.nz:meoip\n");
+    fprintf(stderr, "https://github.com/chrisandreae/meoip.git\n");
     fprintf(stderr, "Usage: meoip [OPTIONS]\n");
     fprintf(stderr, " -h\t\tPrint this help message.\n");
     fprintf(stderr, " -F\t\tRun in foreground.\n");
@@ -443,7 +445,7 @@ int main(int argc,char **argv)
 			configured = 1;
 			break;
 		default:
-			fprintf(stderr, "Unrecognised command line argument: %c\n", opt);
+			printusage();
 			exit(1);
 		}
     }
