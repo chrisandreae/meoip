@@ -6,13 +6,19 @@ AC_INIT([MEOIP2],[0.9],[Chris Andreae <chris@andreae.gen.nz>])
 AC_CONFIG_SRCDIR([minIni.h])
 AC_CONFIG_HEADERS([config.h])
 
+AC_ARG_ENABLE([debug], AS_HELP_STRING([--enable-debug], [Compile with debugging support]))
 
-CFLAGS=-O0 -g
+if test "x$enableval" == xyes; then
+	CFLAGS="$CFLAGS -O0 -g"
+else
+	CFLAGS="$CFLAGS -O2 -DNDEBUG"
+fi
+
 # Checks for programs.
 AC_PROG_CC
 AM_PROG_CC_C_O
 
-AM_INIT_AUTOMAKE([1.10 no-define])                                                                                                                                                                        
+AM_INIT_AUTOMAKE([1.10 no-define])
 
 # Checks for libraries.
 AC_CHECK_LIB(pthread, pthread_create, [LIBS="$LIBS -lpthread"])
