@@ -1,5 +1,6 @@
 #include "gre_host.h"
 #include "tunnel.h"
+#include "logging.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -12,8 +13,6 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
-
-extern int gVerbose;
 
 struct gre_host* gre_host_alloc(){						
 	struct gre_host* n = malloc(sizeof(struct gre_host));	
@@ -48,7 +47,7 @@ int addr_is_wildcard(const struct sockaddr* addr, size_t addr_len){
 	case AF_INET6:
 		return 0 == memcmp(&(((struct sockaddr_in6*)addr)->sin6_addr), &in6addr_any, sizeof(struct in6_addr));
 	default:
-		fprintf(stderr, "Unknown address family %d\n", addr->sa_family);
+		log_msg(NORMAL, "addr_is_wildcard() - unknown address family %d\n", addr->sa_family);
 		exit(1); 
 	}
 	return 0;
@@ -78,7 +77,7 @@ int gre_host_check_srcconflict(const void* _key, const void* _host){
 	return key_wc == host_wc; /* returns 0 if not equal => conflict */
 }
 
-void gre_host_debug(FILE* stream, const struct gre_host* g){
+void gre_host_format(const struct gre_host* g, char * const obuf, const int olen){
 	char abuf[64], bbuf[64];
 	getnameinfo((struct sockaddr*)&g->addr, g->addr_len, abuf, sizeof(abuf), 0, 0, NI_NUMERICHOST);
 	if(g->bind_addr_len){
@@ -87,7 +86,12 @@ void gre_host_debug(FILE* stream, const struct gre_host* g){
 	else{
 		sprintf(bbuf, "<any>");
 	}
-	fprintf(stream, "[%s -> %s]@%p", bbuf, abuf, g);
+	if(getVerbosity() >= DEBUG){
+		snprintf(obuf, olen, "[%s -> %s]@%p", bbuf, abuf, g);
+	}
+	else{
+		snprintf(obuf, olen, "[%s -> %s]", bbuf, abuf);
+	}
 }
 
 
@@ -109,7 +113,7 @@ struct gre_host* gre_host_for_addr(const struct sockaddr* dest_addr, size_t dest
    	struct gre_host** srcConflict = (struct gre_host**) lfind(&g, gHosts.hosts, &gHosts.count,
 										 sizeof(struct gre_host*), gre_host_check_srcconflict);
 	if(srcConflict != NULL){
-		fprintf(stderr, "Tunnel conflict: must not have two tunnels to the same destination"
+		log_msg(NORMAL, "Tunnel conflict: must not have two tunnels to the same destination"
 				" where one is bound to a local address and the other is not.\n");
 		exit(1);
 	}
@@ -122,14 +126,15 @@ struct gre_host* gre_host_for_addr(const struct sockaddr* dest_addr, size_t dest
 	/* lsearch appends if not found, returns entry. */
 	struct gre_host* loc = *(struct gre_host**) lsearch(&g, gHosts.hosts, &gHosts.count, sizeof(struct gre_host*), gre_host_compar);
 
+	{
+		GRE_HOST_LOG_STR(loc_str, DEBUG, loc);
+		log_msg(DEBUG, "Adding to %s GRE host: %s\n", loc == g ? "new" : "existing", loc_str);
+	}
+
 	/* if already present, free */
 	if(loc != g) free(g);
 
-	if(gVerbose >= 2){
-		printf("Adding to %s GRE host: ", loc == g ? "new" : "old");
-		gre_host_debug(stdout, loc);
-		printf("\n");
-	}
+
 	return loc;
 }
 
@@ -145,9 +150,10 @@ struct gre_host* gre_host_for_name(char* dest, char* bind){
 		hints.ai_flags = AI_NUMERICHOST;
 		int r = getaddrinfo(bind, NULL, &hints, &bind_addrinfo);
 		if(r != 0){
-			fprintf(stderr, "Address lookup of \"%s\" failed - not a valid IP address? (%s)\n",
+			log_msg(NORMAL, "Address lookup of \"%s\" failed - not a valid IP address? (%s)\n",
 					bind,
 					r == EAI_SYSTEM ? strerror(errno) : gai_strerror(r));
+			exit(1);
 		}
 		bind_addr = bind_addrinfo->ai_addr;
 		bind_addrlen = bind_addrinfo->ai_addrlen;
@@ -162,9 +168,10 @@ struct gre_host* gre_host_for_name(char* dest, char* bind){
 	   asking for ipv4 only (TODO: ipv6) */
     int r = getaddrinfo(dest, NULL, &hints, &res);
     if(r != 0) {
-		fprintf(stderr, "DNS resolution of \"%s\" failed: %s\n",
+		log_msg(NORMAL, "DNS resolution of \"%s\" failed: %s\n",
 				dest,
 				r == EAI_SYSTEM ? strerror(errno) : gai_strerror(r));
+		exit(1);
     }
 
 	/* look up the host by address and return */
@@ -184,16 +191,15 @@ struct tunnel* gre_host_add_new_tunnel(struct gre_host* host, struct tunnel* tun
 	struct tunnel* t = *(struct tunnel**) lsearch(&tun, host->tunnels.tunnels, &host->tunnels.count,
 												sizeof(struct tunnel*), tunnel_compar);
 	if(t != tun){
-		fprintf(stderr, "Warning: ignored duplicate tunnel %s (id %d, same as %s) for host ",
-				tun->name, t->id, t->name);
-		gre_host_debug(stderr, host);
-		fprintf(stderr, "\n");
+		GRE_HOST_LOG_STR(host_str, VERBOSE, host);
+		log_msg(VERBOSE, "Warning: ignored duplicate tunnel %s (id %d, same as %s) for host %s\n",
+			tun->name, t->id, t->name, host_str);
 		free(tun);
 	}
-	else if(gVerbose >= 2){
-		printf("Added new tunnel %s (id %d) to host ", t->name, t->id);
-		gre_host_debug(stdout, host);
-		printf("\n");
+
+	{
+		GRE_HOST_LOG_STR(host_str, DEBUG, host);
+		log_msg(DEBUG, "Added new tunnel %s (id %d) to host %s\n", t->name, t->id, host_str);
 	}
 
 	return t;
@@ -229,14 +235,16 @@ void gre_host_disconnect(struct gre_host* host){
 /* Create the socket */
 void gre_host_open_socket(struct gre_host* host){
 	host->socket_fd = socket(host->addr.ss_family, SOCK_RAW, IPPROTO_GRE);
-	if(gVerbose >= 3){
-		printf("Opened raw socket %d for host ", host->socket_fd);
-		gre_host_debug(stdout, host);
-		printf("\n");
-	}
+
 	if(host->socket_fd == -1){
-		perror("Error opening GRE socket: ");
+		const char* const err_str = strerror(errno);
+		GRE_HOST_LOG_STR(host_str, DEBUG, host);
+		log_msg(NORMAL, "Error opening GRE socket for host %s: %s\n", host_str, err_str);
 		exit(1);
+	}
+	else {
+		GRE_HOST_LOG_STR(host_str, DEBUG, host);
+		log_msg(DEBUG, "Opened raw socket %d for host %s\n", host->socket_fd, host_str);
 	}
 
     /* Do we want to consider setting the buffer sizes to the BDP,
@@ -253,16 +261,22 @@ void gre_host_open_socket(struct gre_host* host){
 
 	if(host->bind_addr_len > 0){
 		if(bind(host->socket_fd, (const struct sockaddr*) &host->bind_addr, host->bind_addr_len) == -1){
-			perror("Error binding GRE socket: ");
+			const char* const err_str = strerror(errno);
+			GRE_HOST_LOG_STR(host_str, DEBUG, host);
+			log_msg(NORMAL, "Error binding GRE socket for host %s: %s\n", host_str, err_str);
 			exit(1);
 		}
 	}
 	if(connect(host->socket_fd, (const struct sockaddr*) &host->addr, host->addr_len) == -1){
-		perror("Error connecting GRE socket: ");
+		const char* const err_str = strerror(errno);
+		GRE_HOST_LOG_STR(host_str, DEBUG, host);
+		log_msg(NORMAL, "Error connecting GRE socket for host %s: %s\n", host_str, err_str);
 		exit(1);
 	}
 	if(fcntl(host->socket_fd, F_SETFL, O_NONBLOCK) == -1){
-		perror("Could not set GRE socket non-blocking: ");
+		const char* const err_str = strerror(errno);
+		GRE_HOST_LOG_STR(host_str, DEBUG, host);
+		log_msg(NORMAL, "Could not set GRE socket non-blocking for host %s: %s\n", host_str, err_str);
 		exit(1);
 	}
 }

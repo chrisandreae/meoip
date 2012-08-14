@@ -48,7 +48,16 @@ int gre_host_compar(const void* _key, const void* _host);
 int gre_host_check_srcconflict(const void* _key, const void* _host);
 
 /* Print a description of the GRE endpoint to the argument stream.*/
-void gre_host_debug(FILE* stream, const struct gre_host* g);
+void gre_host_format(const struct gre_host* g, char* const obuf, const int olen);
+
+/* Convenience macro for logging: define a local char array and format
+ * the specified gre_host into it if the specified verbosity level
+ * matches getVerbosity().
+ */
+#define GRE_HOST_LOG_STR(NAME, LEVEL, HOST)					\
+	char NAME[80];											\
+	if(getVerbosity() >= (LEVEL))							\
+		gre_host_format((HOST), NAME, sizeof(NAME));
 
 /* Looks up or creates a gre_host in gHosts matching the argument
    addresses.*/

@@ -41,9 +41,8 @@
 
 #include "gre_host.h"
 #include "tunnel.h"
+#include "logging.h"
 
-
-int gVerbose = 0;
 int gShuttingDown = 0;
 struct gre_host_list gHosts = {0};
 
@@ -107,10 +106,9 @@ static inline const struct tunnel* tunnel_bsearch (const struct gre_host* h, con
 void *gre_host_transact(void* _host) {
 	const struct gre_host * const host = (const struct gre_host * const) _host;
 
-	if(gVerbose){
-		printf("Started gre_host_transact thread for ");
-		gre_host_debug(stdout, host);
-		printf("\n");
+	{
+		GRE_HOST_LOG_STR(host_str, VERBOSE, host);
+		log_msg(VERBOSE, "Started gre_host_transact thread for %s\n", host_str);
 	}
 
 	const int socket_fd = host->socket_fd;
@@ -139,34 +137,28 @@ void *gre_host_transact(void* _host) {
 				if(errno == EAGAIN) break;
 				else{
 					if(gShuttingDown) return NULL;
-					if(gVerbose) perror("GRE receive error");
+					log_msg(VERBOSE, "GRE receive error: %s\n", strerror(errno));
 					break;
 				}
 			}
 			else if(readsz == 0) {
-				if(gVerbose) fprintf(stderr, "Impossible, read zero bytes from raw socket");
+				log_msg(VERBOSE, "Impossible, read zero bytes from raw socket\n");
 				break;
 			}
 			else if(readsz < sizeof(struct recv_hdr)){
-				if(gVerbose) fprintf(stderr, "Bad GRE data: smaller than struct recv_hdr (%d bytes)", readsz);
+				log_msg(VERBOSE, "Bad GRE data: smaller than struct recv_hdr (%d bytes)\n", readsz);
 				continue;
 			}
 
 			struct proto_hdr* hdr = &((struct recv_hdr*) buf)->hdr;
 			if(hdr->gre_protocol != gre_proto) {
-#ifndef NDEBUG
-				if(gVerbose >= 2){
-					fprintf(stderr, "Read GRE datagram with unexpected protocol: 0x%x, ignoring\n", ntohs(hdr->gre_protocol));
-				}
-#endif
+				log_msg(DEBUG, "Read GRE datagram with unexpected protocol: 0x%x, ignoring\n", ntohs(hdr->gre_protocol));
 				continue;
 			}
 			unsigned short datagram_size = ntohs(hdr->data_size);
 			if(datagram_size + sizeof(struct recv_hdr) != readsz) {
-				if(gVerbose){
-					fprintf(stderr, "Read %d bytes from GRE but header claimed it should be %zu (%hu+%zu) bytes: discarding\n",
-							readsz, datagram_size + sizeof(struct recv_hdr), datagram_size, sizeof(struct recv_hdr));
-				}
+				log_msg(VERBOSE, "Read %d bytes from GRE but header claimed it should be %zu (%hu+%zu) bytes: discarding\n",
+					readsz, datagram_size + sizeof(struct recv_hdr), datagram_size, sizeof(struct recv_hdr));
 				continue;
 			}
 
@@ -178,20 +170,15 @@ void *gre_host_transact(void* _host) {
 			/* look up the tunnel that corresponds to tunnel_id */
 			const struct tunnel* tun = tunnel_bsearch(host, tunnel_id);
 			if(tun == NULL){
-#ifndef NDEBUG
-				if(gVerbose){
-					fprintf(stderr, "Unmatched tunnel id %d from host ", tunnel_id);
-					gre_host_debug(stderr, host);
-					fprintf(stderr, ".\n");
-				}
-#endif
+				GRE_HOST_LOG_STR(host_str, DEBUG, host);
+				log_msg(DEBUG, "Unmatched tunnel id %d from host %s\n", tunnel_id, host_str);
 				continue;
 			}
 
 #ifndef NDEBUG
-			if(gVerbose >= 3){
-				gre_host_debug(stderr, host);
-				fprintf(stderr, " => %s\n", tun->name);
+			{
+				GRE_HOST_LOG_STR(host_str, PACKETS, host);
+				log_msg(PACKETS, "%s => %s\n", host_str, tun->name);
 			}
 #endif
 
@@ -201,7 +188,7 @@ void *gre_host_transact(void* _host) {
 					break;
 				}
 				else{
-					perror("Couldn't write to tunnel device");
+					log_msg(NORMAL, "Couldn't write to tunnel device %s: %s\n", tun->name, strerror(errno));
 				}
 			}
 		}
@@ -212,9 +199,7 @@ void *gre_host_transact(void* _host) {
 void *tunnel_transact(void *_tunnel) {
     const struct tunnel * const tunnel = (const struct tunnel* const)_tunnel;
 	
-	if(gVerbose){
-		printf("Started tunnel_transact thread for %s (in host %p)\n", tunnel->name, tunnel->dest);
-	}
+	log_msg(VERBOSE, "Started tunnel_transact thread for %s (in host %p)\n", tunnel->name, tunnel->dest);
 
     const int fd = tunnel->tun_fd;
     const int raw_socket = tunnel->dest->socket_fd;
@@ -245,21 +230,20 @@ void *tunnel_transact(void *_tunnel) {
 				if(errno == EAGAIN) break;
 				else{
 					if(gShuttingDown) return NULL;
-					perror("TAP device receive error");
+					log_msg(VERBOSE, "TAP device receive error: %s\n", strerror(errno));
 					break;
 				}
 			}
 			else if(readsz == 0) {
-				perror("impossible, read nothing from TAP device!");
+				log_msg(VERBOSE, "impossible, read nothing from TAP device: %s\n", strerror(errno));
 				break;
 			}
 			hdr->data_size = htons(readsz);
 
 #ifndef NDEBUG
-			if(gVerbose >= 3){
-				fprintf(stderr, "%s => ", tunnel->name);
-				gre_host_debug(stderr, tunnel->dest);
-				fprintf(stderr, "\n");
+			{
+				GRE_HOST_LOG_STR(dest_str, PACKETS, tunnel->dest);
+				log_msg(PACKETS, "%s => %s\n", tunnel->name, dest_str);
 			}
 #endif
 
@@ -270,7 +254,7 @@ void *tunnel_transact(void *_tunnel) {
 					break;
 				}
 				else{
-					fprintf(stderr, "Error writing to raw socket (%d): %s\n", raw_socket, strerror(errno));
+					log_msg(VERBOSE, "Error writing to raw socket (%d): %s\n", raw_socket, strerror(errno));
 					break;
 				}
 			}
@@ -279,7 +263,7 @@ void *tunnel_transact(void *_tunnel) {
     return(NULL);
 }
 
-void add_new_tunnel(char* name, char* dest, char* bind, int tunnel_id) {
+void add_new_tunnel(char* name, char* dest, char* bind, unsigned short tunnel_id) {
 	struct gre_host* host = gre_host_for_name(dest, bind);
 	struct tunnel* tun = tunnel_new(name, tunnel_id, host);
 
@@ -295,7 +279,7 @@ void load_tunnel_from_argument(const char* arg) {
 	char* name = next;
 	next = index(next, '/');
 	if(next == NULL){
-		fprintf(stderr, "Failed to parse tunnel specifier \"%s\" (no host found)\n", arg);
+		log_msg(NORMAL, "Failed to parse tunnel specifier \"%s\" (no host found)\n", arg);
 		exit(1);
 	}
 	*next++ = '\0';
@@ -303,7 +287,7 @@ void load_tunnel_from_argument(const char* arg) {
 	char* host = next;
 	next = index(next, '/');
 	if(next == NULL){
-		fprintf(stderr, "Failed to parse tunnel specifier \"%s\" (no id found)\n", arg);
+		log_msg(NORMAL, "Failed to parse tunnel specifier \"%s\" (no id found)\n", arg);
 		exit(1);
 	}
 	*next++ = '\0';
@@ -312,19 +296,23 @@ void load_tunnel_from_argument(const char* arg) {
 	char* ep;
 	int id = strtol(id_s, &ep, 10);
 	if(*ep != '\0'){
-		fprintf(stderr, "Failed to parse tunnel specifier \"%s\": bad tunnel id \"%s\"\n", arg, id_s);
+		log_msg(NORMAL, "Failed to parse tunnel specifier \"%s\": bad tunnel id \"%s\"\n", arg, id_s);
 		exit(1);
 	}
 
-	add_new_tunnel(name, host, NULL, id);
+    if (id < 0 || id > 0xffff) {
+		log_msg(NORMAL, "ID \"%d\" of tunnel %s is invalid\n", id, name);
+		exit(1);
+    }
+
+	add_new_tunnel(name, host, NULL, (unsigned short) id);
 	free(buf);
 }
 
 void load_tunnels_from_config(const char* configname) {
     struct stat mystat;
-    if (stat(configname,&mystat)) {
-		perror("Config file error");
-		fprintf(stderr, "Filename: %s\n", configname);
+    if (stat(configname, &mystat)) {
+		log_msg(NORMAL, "Couldn't open config file \"%s\": %s\n", configname, strerror(errno));
 		exit(1);
     }
 
@@ -337,26 +325,24 @@ void load_tunnels_from_config(const char* configname) {
 		/* read id */
         int id = (int) ini_getl(sectionname,"id",-1,configname);
 		if(id == -1){
-			fprintf(stderr, "Required field 'id' missing for tunnel %s\n", sectionname);
+			log_msg(NORMAL, "Required field 'id' missing for tunnel %s\n", sectionname);
 			exit(1);
 		}
 
 		/* read destination */
 		if (ini_gets(sectionname, "dst", "", dest, sizeof(dest), configname) < 1) {
-			fprintf(stderr, "Required field 'dst' missing for tunnel %s\n", sectionname);
+			log_msg(NORMAL, "Required field 'dst' missing for tunnel %s\n", sectionname);
 			exit(1);
 		}
 
 		/* read source */
 		ini_gets(sectionname, "bind", "", bind, sizeof(bind), configname);
 
-		if(gVerbose){
-			printf("Creating tunnel: name=%s dst=%s id=%d", sectionname, dest, id);
-			if(bind[0] != '\0'){
-				printf(" src=%s", bind);
-			}
-			printf("\n");
+		log_msg(VERBOSE, "Creating tunnel: name=%s dst=%s id=%d", sectionname, dest, id);
+		if(bind[0] != '\0'){
+			log_msg(VERBOSE, " src=%s", bind);
 		}
+		log_msg(VERBOSE, "\n");
 
 		add_new_tunnel(sectionname, dest, bind, id);
     }
@@ -376,9 +362,7 @@ void close_connections(){
 	if(closed) return;
 	closed = 1;
 
-	if(gVerbose){
-		printf("Shutting down connections\n");
-	}
+	log_msg(VERBOSE, "Shutting down connections\n");
 
 	int i;
 	for(i = 0; i < gHosts.count; ++i){
@@ -427,11 +411,11 @@ int main(int argc,char **argv)
 			background = 0;
 			break;
 		case 'v':
-			gVerbose++;
+			setVerbosity(getVerbosity() + 1);
 			break;
 		case 'p':
 			if(pidfile){
-				fprintf(stderr, "-<pidfile> p may be specified only once.\n");
+				log_msg(NORMAL, "-<pidfile> p may be specified only once.\n");
 				exit(1);
 			}
 			asprintf(&pidfile, "%s", optarg);
@@ -469,7 +453,7 @@ int main(int argc,char **argv)
     if(background) {
 		int ret = daemon(1, 1);
 		if(ret != 0) {
-			perror("Daemon failed");
+			log_msg(NORMAL, "Daemon failed: %s\n", strerror(errno));
 			exit(ret);
 		}
     }
@@ -479,7 +463,7 @@ int main(int argc,char **argv)
 		if(!pidfile) {
 			int ret = asprintf(&pidfile, "/var/run/meoip");
 			if(ret == -1) {
-				fprintf(stderr, "Error allocating pid file name\n");
+				log_msg(NORMAL, "Error allocating pid file name: %s\n", strerror(errno));
 				exit(1);
 			}
 		}
@@ -487,7 +471,7 @@ int main(int argc,char **argv)
 		FILE* mfd = fopen(pidfile, "w");
 		free(pidfile); /* always heap-allocated */
 		if(mfd == NULL) {
-			fprintf(stderr, "Error opening pid file %s (%s)\n", pidfile, strerror(errno));
+			log_msg(NORMAL, "Error opening pid file %s: %s\n", pidfile, strerror(errno));
 		}
 		fprintf(mfd,"%d",getpid());
 		fclose(mfd);
@@ -504,15 +488,14 @@ int main(int argc,char **argv)
 		struct gre_host* host = gHosts.hosts[i];
 		rc = pthread_create(&thread, &attr, gre_host_transact, (void*) host);
 		if(rc != 0){
-			fprintf(stderr, "Couldn't start transmit thread for host ");
-			gre_host_debug(stderr, host);
-			fprintf(stderr, "\n");
+			GRE_HOST_LOG_STR(host_str, NORMAL, host);
+			log_msg(NORMAL, "Couldn't start transmit thread for host %s\n", host_str);
 			exit(1);
 		}
 		for(j = 0; j < host->tunnels.count; ++j){
 			rc = pthread_create(&thread, &attr, tunnel_transact, (void*) host->tunnels.tunnels[j]);
 			if(rc != 0){
-				fprintf(stderr, "Couldn't start receive thread for tunnel %s\n", host->tunnels.tunnels[j]->name);
+				log_msg(NORMAL, "Couldn't start receive thread for tunnel %s\n", host->tunnels.tunnels[j]->name);
 				exit(1);
 			}
 		}

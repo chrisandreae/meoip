@@ -1,5 +1,6 @@
 #include "tunnel.h"
 #include "gre_host.h"
+#include "logging.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -17,7 +18,6 @@
 	#include <net/if_tap.h>
 #endif
 
-extern int gVerbose;
 
 struct tunnel* tunnel_alloc(){						
 	struct tunnel* n = malloc(sizeof(struct tunnel));	
@@ -35,7 +35,7 @@ int tunnel_compar(const void* _t1, const void* _t2) {
 	else return t1->id - t2->id;
 }
 
-struct tunnel* tunnel_new(char* name, int tunnel_id, struct gre_host* host) {	
+struct tunnel* tunnel_new(char* name, unsigned short tunnel_id, struct gre_host* host) {
 
 	/* Create and populate a new tunnel */
 	struct tunnel* tun = tunnel_alloc();
@@ -46,10 +46,7 @@ struct tunnel* tunnel_new(char* name, int tunnel_id, struct gre_host* host) {
     tun->name[sizeof(tun->name) - 1] = '\0';
 
     tun->id = tunnel_id;
-    if (tunnel_id == 0 || tunnel_id > 65536) {
-		fprintf(stderr, "ID of \"%d\" is not correct\n", tun->id);
-		exit(-1);
-    }
+
 	return tun;
 }
 
@@ -65,26 +62,26 @@ void tunnel_open(struct tunnel *tunnel) {
 	char path[40];
 	for(tapdev = 0; tapdev < 16; ++tapdev){
 		sprintf(path, "/dev/tap%d", tapdev);
-		if(gVerbose >= 3) printf("Attempting to open device %s: ", path);
+		log_msg(PACKETS, "Attempting to open device %s: ", path);
 		if((tunnel->tun_fd = open(path, O_RDWR)) > 0){
 			/* success - save the name in the IFR so we can bring it
 			   up */
-			if(gVerbose >= 3) printf("Success (socket %d)\n", tunnel->tun_fd);
+			log_msg(PACKETS, "Success (socket %d)\n", tunnel->tun_fd);
 			sprintf(tunnel->ifr.ifr_name, "tap%d", tapdev);
 			break;
 		}
 		else{
-			if(gVerbose >= 3) printf("Failed", tunnel->tun_fd);
+			log_msg(PACKETS, "Failed\n");
 		}
 	}
 	if(tunnel->tun_fd < 0){
-		fprintf(stderr, "open_tun: /dev/net/tun error: %s", strerror(errno));
+		log_msg(NORMAL, "open_tun: error opening any /dev/tap* device: %s\n", strerror(errno));
 		exit(1);
 	}
 #else
 	/* On other platforms, we have a generic device to open. */
 	if ((tunnel->tun_fd = open(TUNNEL_DEV, O_RDWR)) < 0) {
-		fprintf(stderr, "open_tun: %s error: %s", TUNNEL_DEV, strerror(errno));
+		log_msg(NORMAL, "open_tun: %s error: %s\n", TUNNEL_DEV, strerror(errno));
 		exit(1);
 	}
 #endif	
@@ -101,7 +98,7 @@ void tunnel_open(struct tunnel *tunnel) {
     }
 
     if (ioctl(tunnel->tun_fd, TUNSETIFF, (void *)&tunnel->ifr) < 0) {
-		perror("Failed to create tunnel interface");
+		log_msg(NORMAL, "Failed to create tunnel interface: %s\n", strerror(errno));
 		exit(1);
     }
 #elif defined(__FreeBSD__)
@@ -111,7 +108,7 @@ void tunnel_open(struct tunnel *tunnel) {
 	   later.
 	*/
     if (ioctl(tunnel->tun_fd, TAPGIFNAME, &tunnel->ifr)) {
-		perror("ioctl(TAPGIFNAME) failed");
+		log_msg(NORMAL, "ioctl(TAPGIFNAME) failed: %s\n", strerror(errno));
 		exit(1);
     }
 	tunnel->ifr.ifr_name[IFNAMSIZ-1] = 0
@@ -121,7 +118,7 @@ void tunnel_open(struct tunnel *tunnel) {
 	   ioctl */
     int tmp_fd;
     if ((tmp_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-		perror("Failed to create tunnel control socket");
+		log_msg(NORMAL, "Failed to create tunnel control socket: %s\n", strerror(errno));
 		exit(1);
     }
 
@@ -129,7 +126,7 @@ void tunnel_open(struct tunnel *tunnel) {
     tunnel->ifr.ifr_flags |= IFF_RUNNING;
 
     if (ioctl(tmp_fd, SIOCSIFFLAGS, (void *)&tunnel->ifr) < 0) {
-		fprintf(stderr, "Failed to set interface flags on %s tunnel interface: %s", tunnel->name, strerror(errno));
+		log_msg(NORMAL, "Failed to set interface flags on %s tunnel interface: %s\n", tunnel->name, strerror(errno));
 		close(tmp_fd);
 		exit(1);
     }
@@ -139,22 +136,23 @@ void tunnel_open(struct tunnel *tunnel) {
     /* and set non-blocking */
     fcntl(tunnel->tun_fd, F_SETFL, O_NONBLOCK);
 
-	if(gVerbose >= 1){
-		printf("Opened tunnel '%s' as device '%s'\n", tunnel->name, tunnel->ifr.ifr_name);
-	}
-	if(gVerbose >= 3) fprintf(stderr, "\t - on socket %d\n", tunnel->tun_fd);
+	log_msg(VERBOSE, "Opened tunnel '%s' as device '%s'\n", tunnel->name, tunnel->ifr.ifr_name);
+	
+	log_msg(DEBUG, "\t - on socket %d\n", tunnel->tun_fd);
 }
 
 void tunnel_close(struct tunnel* t){
 #if defined(__FreeBSD__)
 	int tmpfd;
     if ((tmpfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-		perror("tunnel_close: socket() failed");
+		log_msg(DEBUG, "tunnel_close - socket() failed: %s\n", strerror(errno));
     }
-	else if (ioctl(tmpfd, SIOCIFDESTROY, t->ifr) < 0) {
-	    perror( "ioctl(SIOCIFDESTROY) failed");
+	else{
+		if (ioctl(tmpfd, SIOCIFDESTROY, t->ifr) < 0) {
+			log_msg(DEBUG, "tunnel_close - ioctl(SIOCIFDESTROY) failed: %s\n", strerror(errno));
+		}
+		close(tmpfd);
 	}
-	close(tmpfd);
 #endif
 
 	close(t->tun_fd);
