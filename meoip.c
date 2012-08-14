@@ -1,23 +1,23 @@
 /*
-    file:   meoip.c
+	file:   meoip.c
 
-    Authors:
-    MEoIP2 fork: Chris Andreae <chris (at) andreae.gen.nz>
-    Linux initial code: Denys Fedoryshchenko aka NuclearCat <nuclearcat (at) nuclearcat.com>
-    FreeBSD support: Daniil Kharun <harunaga (at) harunaga.ru>
+	Authors:
+	MEoIP2 fork: Chris Andreae <chris (at) andreae.gen.nz>
+	Linux initial code: Denys Fedoryshchenko aka NuclearCat <nuclearcat (at) nuclearcat.com>
+	FreeBSD support: Daniil Kharun <harunaga (at) harunaga.ru>
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+	This program is free software: you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation, either version 3 of the License, or
+	(at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.*
+	You should have received a copy of the GNU General Public License
+	along with this program.  If not, see <http://www.gnu.org/licenses/>.*
 */
 #ifndef __UCLIBC__
 #define _GNU_SOURCE
@@ -46,7 +46,7 @@
 int gShuttingDown = 0;
 struct gre_host_list gHosts = {0};
 
-/* 
+/*
  * Maximum size of tunneled frame permitted by eoip protocol is 65535
  * (uint16 size field). However, an ethernet frame is extremely
  * unlikely to be this large: even jumbo frames are only 9000 bytes.
@@ -65,15 +65,15 @@ struct gre_host_list gHosts = {0};
 #define swap_bytes(x) ((((x) & 0xFF00) >> 8) | (((x) & 0xFF) << 8))
 
 struct proto_hdr{
-    uint16_t gre_flags;
+	uint16_t gre_flags;
 	uint16_t gre_protocol;
-    uint16_t data_size;
-    uint16_t tunnel_id;
+	uint16_t data_size;
+	uint16_t tunnel_id;
 } __attribute__((packed));
 
 struct recv_hdr{
-    uint8_t ip[20];
-    struct proto_hdr hdr;
+	uint8_t ip[20];
+	struct proto_hdr hdr;
 } __attribute__((packed));
 
 
@@ -112,13 +112,13 @@ void *gre_host_transact(void* _host) {
 	}
 
 	const int socket_fd = host->socket_fd;
-    const int gre_proto = htons(MIKROTIK_GRE_PROTO_ID);
+	const int gre_proto = htons(MIKROTIK_GRE_PROTO_ID);
 
-    uint8_t * const buf = malloc(MAXPAYLOAD);
+	uint8_t * const buf = malloc(MAXPAYLOAD);
 
-    fd_set rfds;
+	fd_set rfds;
 
-    while(1) {
+	while(1) {
 		/* block until we can read */
 		FD_ZERO(&rfds);
 		FD_SET(socket_fd, &rfds);
@@ -192,34 +192,34 @@ void *gre_host_transact(void* _host) {
 				}
 			}
 		}
-    }
-    return 0;
+	}
+	return 0;
 }
 
 void *tunnel_transact(void *_tunnel) {
-    const struct tunnel * const tunnel = (const struct tunnel* const)_tunnel;
-	
+	const struct tunnel * const tunnel = (const struct tunnel* const)_tunnel;
+
 	log_msg(VERBOSE, "Started tunnel_transact thread for %s (in host %p)\n", tunnel->name, tunnel->dest);
 
-    const int fd = tunnel->tun_fd;
-    const int raw_socket = tunnel->dest->socket_fd;
+	const int fd = tunnel->tun_fd;
+	const int raw_socket = tunnel->dest->socket_fd;
 
-    unsigned char * const buf = malloc(MAXPAYLOAD + sizeof(struct proto_hdr));
-    struct proto_hdr * const hdr = (struct proto_hdr*) buf;
-    unsigned char * const dataptr = buf + sizeof(struct proto_hdr);
+	unsigned char * const buf = malloc(MAXPAYLOAD + sizeof(struct proto_hdr));
+	struct proto_hdr * const hdr = (struct proto_hdr*) buf;
+	unsigned char * const dataptr = buf + sizeof(struct proto_hdr);
 
-    int ret;
-    fd_set rfds;
+	int ret;
+	fd_set rfds;
 
-    /* initialize protocol header */
-    memset(buf, 0x0, sizeof(struct proto_hdr));
+	/* initialize protocol header */
+	memset(buf, 0x0, sizeof(struct proto_hdr));
 
 	hdr->gre_flags    = htons(GRE_FLAG_KEY | GRE_FLAG_VERSION1);
-    hdr->gre_protocol = htons(MIKROTIK_GRE_PROTO_ID);
-    hdr->tunnel_id    = htons(tunnel->id); 
-    hdr->tunnel_id    = swap_bytes(hdr->tunnel_id); /* tunnel id is little-endian: opposite to network order */
+	hdr->gre_protocol = htons(MIKROTIK_GRE_PROTO_ID);
+	hdr->tunnel_id    = htons(tunnel->id);
+	hdr->tunnel_id    = swap_bytes(hdr->tunnel_id); /* tunnel id is little-endian: opposite to network order */
 
-    while(1) {
+	while(1) {
 		FD_ZERO(&rfds);
 		FD_SET(fd, &rfds);
 		ret = select(fd+1, &rfds, NULL, NULL, NULL);
@@ -259,8 +259,8 @@ void *tunnel_transact(void *_tunnel) {
 				}
 			}
 		}
-    }
-    return(NULL);
+	}
+	return(NULL);
 }
 
 void add_new_tunnel(char* name, char* dest, char* bind, unsigned short tunnel_id) {
@@ -300,30 +300,30 @@ void load_tunnel_from_argument(const char* arg) {
 		exit(1);
 	}
 
-    if (id < 0 || id > 0xffff) {
+	if (id < 0 || id > 0xffff) {
 		log_msg(NORMAL, "ID \"%d\" of tunnel %s is invalid\n", id, name);
 		exit(1);
-    }
+	}
 
 	add_new_tunnel(name, host, NULL, (unsigned short) id);
 	free(buf);
 }
 
 void load_tunnels_from_config(const char* configname) {
-    struct stat mystat;
-    if (stat(configname, &mystat)) {
+	struct stat mystat;
+	if (stat(configname, &mystat)) {
 		log_msg(NORMAL, "Couldn't open config file \"%s\": %s\n", configname, strerror(errno));
 		exit(1);
-    }
+	}
 
-    char sectionname[IFNAMSIZ];
+	char sectionname[IFNAMSIZ];
 	int sn;
-    for (sn = 0; ini_getsection(sn, sectionname, sizeof(sectionname), configname) > 0; sn++) {
+	for (sn = 0; ini_getsection(sn, sectionname, sizeof(sectionname), configname) > 0; sn++) {
 		char dest[256];
 		char bind[256];
 
 		/* read id */
-        int id = (int) ini_getl(sectionname,"id",-1,configname);
+		int id = (int) ini_getl(sectionname,"id",-1,configname);
 		if(id == -1){
 			log_msg(NORMAL, "Required field 'id' missing for tunnel %s\n", sectionname);
 			exit(1);
@@ -345,7 +345,7 @@ void load_tunnels_from_config(const char* configname) {
 		log_msg(VERBOSE, "\n");
 
 		add_new_tunnel(sectionname, dest, bind, id);
-    }
+	}
 }
 
 void open_connections(){
@@ -379,35 +379,35 @@ void term_handler(int s)
 }
 
 void printusage(){
-    fprintf(stderr, "Mikrotik EoIP %s\n",PACKAGE_VERSION);
-    fprintf(stderr, "https://github.com/chrisandreae/meoip.git\n");
-    fprintf(stderr, "Usage: meoip [OPTIONS]\n");
-    fprintf(stderr, " -h\t\tPrint this help message.\n");
-    fprintf(stderr, " -F\t\tRun in foreground.\n");
-    fprintf(stderr, " -v\t\tVerbose\n");
-    fprintf(stderr, " -f configfile\tConfig file path\n");
-    fprintf(stderr, " -t name/host/id\tSpecify tunnel on command line\n");
-    fprintf(stderr, " -p pidfile\tOutput to alternate pid file\n");
+	fprintf(stderr, "Mikrotik EoIP %s\n",PACKAGE_VERSION);
+	fprintf(stderr, "https://github.com/chrisandreae/meoip.git\n");
+	fprintf(stderr, "Usage: meoip [OPTIONS]\n");
+	fprintf(stderr, " -h\t\tPrint this help message.\n");
+	fprintf(stderr, " -F\t\tRun in foreground.\n");
+	fprintf(stderr, " -v\t\tVerbose\n");
+	fprintf(stderr, " -f configfile\tConfig file path\n");
+	fprintf(stderr, " -t name/host/id\tSpecify tunnel on command line\n");
+	fprintf(stderr, " -p pidfile\tOutput to alternate pid file\n");
 }
 
 int main(int argc,char **argv)
 {
-    /* defaults */
-    int background   = 1;
-    char *pidfile    = NULL;
+	/* defaults */
+	int background   = 1;
+	char *pidfile    = NULL;
 
 	int configured = 0;
 
-    const char* defaultcfgname = "/etc/meoip.cfg";
+	const char* defaultcfgname = "/etc/meoip.cfg";
 
-    /* parse options */
-    char opt;
-    while((opt = getopt(argc, argv, "hFvf:t:p:b:")) != -1) {
+	/* parse options */
+	char opt;
+	while((opt = getopt(argc, argv, "hFvf:t:p:b:")) != -1) {
 		switch(opt) {
 		case 'h':
 			printusage();
 			exit(0);
-		case 'F': 
+		case 'F':
 			background = 0;
 			break;
 		case 'v':
@@ -432,33 +432,33 @@ int main(int argc,char **argv)
 			printusage();
 			exit(1);
 		}
-    }
-    
+	}
+
 	/* if not configured, try default config file */
 	if(!configured){
 		load_tunnels_from_config(defaultcfgname);
 	}
 	/* open sockets and tunnel devices */
-    open_connections();
+	open_connections();
 
-    /* register signal handler */
-    struct sigaction sa;
-    memset(&sa, 0x0, sizeof(sa));
-    sa.sa_handler = term_handler;
-    sigaction(SIGTERM, &sa, 0);
-    sigaction(SIGINT,  &sa, 0);
+	/* register signal handler */
+	struct sigaction sa;
+	memset(&sa, 0x0, sizeof(sa));
+	sa.sa_handler = term_handler;
+	sigaction(SIGTERM, &sa, 0);
+	sigaction(SIGINT,  &sa, 0);
 
 
-    /* Fork after creating tunnels, useful for scripts */
-    if(background) {
+	/* Fork after creating tunnels, useful for scripts */
+	if(background) {
 		int ret = daemon(1, 1);
 		if(ret != 0) {
 			log_msg(NORMAL, "Daemon failed: %s\n", strerror(errno));
 			exit(ret);
 		}
-    }
+	}
 
-    /* output pid file */
+	/* output pid file */
 	{
 		if(!pidfile) {
 			int ret = asprintf(&pidfile, "/var/run/meoip");
@@ -477,11 +477,11 @@ int main(int argc,char **argv)
 		fclose(mfd);
 	}
 
-    /* set up threads */
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-	
+	/* set up threads */
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+
 	int i, j, rc;
 	pthread_t thread;
 	for(i = 0; i < gHosts.count; ++i){

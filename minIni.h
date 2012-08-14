@@ -58,55 +58,55 @@ int  ini_getkey(const TCHAR *Section, int idx, TCHAR *Buffer, int BufferSize, co
   class minIni
   {
   public:
-    minIni(const std::string& filename) : iniFilename(filename)
-      { }
+	minIni(const std::string& filename) : iniFilename(filename)
+	  { }
 
-    long getl(const std::string& Section, const std::string& Key, long DefValue=0) const
-      { return ini_getl(Section.c_str(), Key.c_str(), DefValue, iniFilename.c_str()); }
+	long getl(const std::string& Section, const std::string& Key, long DefValue=0) const
+	  { return ini_getl(Section.c_str(), Key.c_str(), DefValue, iniFilename.c_str()); }
 
-    int geti(const std::string& Section, const std::string& Key, int DefValue=0) const
-      { return static_cast<int>(this->getl(Section, Key, long(DefValue))); }
+	int geti(const std::string& Section, const std::string& Key, int DefValue=0) const
+	  { return static_cast<int>(this->getl(Section, Key, long(DefValue))); }
 
-    std::string gets(const std::string& Section, const std::string& Key, const std::string& DefValue="") const
-      {
-        char buffer[INI_BUFFERSIZE];
-        ini_gets(Section.c_str(), Key.c_str(), DefValue.c_str(), buffer, INI_BUFFERSIZE, iniFilename.c_str());
-        return buffer;
-      }
+	std::string gets(const std::string& Section, const std::string& Key, const std::string& DefValue="") const
+	  {
+		char buffer[INI_BUFFERSIZE];
+		ini_gets(Section.c_str(), Key.c_str(), DefValue.c_str(), buffer, INI_BUFFERSIZE, iniFilename.c_str());
+		return buffer;
+	  }
 
-    std::string getsection(int idx) const
-      {
-        char buffer[INI_BUFFERSIZE];
-        ini_getsection(idx, buffer, INI_BUFFERSIZE, iniFilename.c_str());
-        return buffer;
-      }
+	std::string getsection(int idx) const
+	  {
+		char buffer[INI_BUFFERSIZE];
+		ini_getsection(idx, buffer, INI_BUFFERSIZE, iniFilename.c_str());
+		return buffer;
+	  }
 
-    std::string getkey(const std::string& Section, int idx) const
-      {
-        char buffer[INI_BUFFERSIZE];
-        ini_getkey(Section.c_str(), idx, buffer, INI_BUFFERSIZE, iniFilename.c_str());
-        return buffer;
-      }
+	std::string getkey(const std::string& Section, int idx) const
+	  {
+		char buffer[INI_BUFFERSIZE];
+		ini_getkey(Section.c_str(), idx, buffer, INI_BUFFERSIZE, iniFilename.c_str());
+		return buffer;
+	  }
 
 #if ! defined INI_READONLY
-    bool put(const std::string& Section, const std::string& Key, long Value) const
-      { return (bool)ini_putl(Section.c_str(), Key.c_str(), Value, iniFilename.c_str()); }
+	bool put(const std::string& Section, const std::string& Key, long Value) const
+	  { return (bool)ini_putl(Section.c_str(), Key.c_str(), Value, iniFilename.c_str()); }
 
-    bool put(const std::string& Section, const std::string& Key, int Value) const
-      { return (bool)ini_putl(Section.c_str(), Key.c_str(), (long)Value, iniFilename.c_str()); }
+	bool put(const std::string& Section, const std::string& Key, int Value) const
+	  { return (bool)ini_putl(Section.c_str(), Key.c_str(), (long)Value, iniFilename.c_str()); }
 
-    bool put(const std::string& Section, const std::string& Key, const std::string& Value) const
-      { return (bool)ini_puts(Section.c_str(), Key.c_str(), Value.c_str(), iniFilename.c_str()); }
+	bool put(const std::string& Section, const std::string& Key, const std::string& Value) const
+	  { return (bool)ini_puts(Section.c_str(), Key.c_str(), Value.c_str(), iniFilename.c_str()); }
 
-    bool del(const std::string& Section, const std::string& Key) const
-      { return (bool)ini_puts(Section.c_str(), Key.c_str(), 0, iniFilename.c_str()); }
+	bool del(const std::string& Section, const std::string& Key) const
+	  { return (bool)ini_puts(Section.c_str(), Key.c_str(), 0, iniFilename.c_str()); }
 
-    bool del(const std::string& Section) const
-      { return (bool)ini_puts(Section.c_str(), 0, 0, iniFilename.c_str()); }
+	bool del(const std::string& Section) const
+	  { return (bool)ini_puts(Section.c_str(), 0, 0, iniFilename.c_str()); }
 #endif
 
   private:
-    std::string iniFilename;
+	std::string iniFilename;
   };
 
 #endif /* __WXWINDOWS__ */

@@ -21,4 +21,3 @@ void log_msg(const enum log_level level, const char* fmt, ...){
 		va_end(ap);
 	}
 }
-

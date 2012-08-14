@@ -14,10 +14,10 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
-struct gre_host* gre_host_alloc(){						
-	struct gre_host* n = malloc(sizeof(struct gre_host));	
-	memset(n, 0x0, sizeof(struct gre_host));		
-	return n;								
+struct gre_host* gre_host_alloc(){
+	struct gre_host* n = malloc(sizeof(struct gre_host));
+	memset(n, 0x0, sizeof(struct gre_host));
+	return n;
 }
 
 int gre_host_compar(const void* _key, const void* _host){
@@ -48,18 +48,18 @@ int addr_is_wildcard(const struct sockaddr* addr, size_t addr_len){
 		return 0 == memcmp(&(((struct sockaddr_in6*)addr)->sin6_addr), &in6addr_any, sizeof(struct in6_addr));
 	default:
 		log_msg(NORMAL, "addr_is_wildcard() - unknown address family %d\n", addr->sa_family);
-		exit(1); 
+		exit(1);
 	}
 	return 0;
 }
 
 /* is it an error to have two connections to the same dest addr with
-    different bind addrs?  No, we may need to make sure our source
-    addr is specifically what the other side wants.  However it should
-    be an error to have a catch-all on a host and also a specifically
-    bound source address, since then both sockets will get the
-    messages.  or we just cope with that I guess? (drop as
-    appropriate?)
+	different bind addrs?  No, we may need to make sure our source
+	addr is specifically what the other side wants.  However it should
+	be an error to have a catch-all on a host and also a specifically
+	bound source address, since then both sockets will get the
+	messages.  or we just cope with that I guess? (drop as
+	appropriate?)
  */
 int gre_host_check_srcconflict(const void* _key, const void* _host){
 	struct gre_host* key  = *(struct gre_host**) _key;
@@ -67,10 +67,10 @@ int gre_host_check_srcconflict(const void* _key, const void* _host){
 
 	if(key->addr_len != host->addr_len)
 		return 1;
-	
+
 	if(0 != memcmp(&key->addr, &host->addr, host->addr_len))
 		return 1;
-	
+
 	int key_wc  = addr_is_wildcard((struct sockaddr*)&key->bind_addr,  key->bind_addr_len);
 	int host_wc = addr_is_wildcard((struct sockaddr*)&host->bind_addr, host->bind_addr_len);
 
@@ -108,16 +108,16 @@ struct gre_host* gre_host_for_addr(const struct sockaddr* dest_addr, size_t dest
 
 	/* Restriction: we don't permit multiple hosts with the same
 	   destination and both bound and unbound source addresses, as
-	   that would result in the same traffic going to both hosts 
+	   that would result in the same traffic going to both hosts
 	*/
-   	struct gre_host** srcConflict = (struct gre_host**) lfind(&g, gHosts.hosts, &gHosts.count,
+	struct gre_host** srcConflict = (struct gre_host**) lfind(&g, gHosts.hosts, &gHosts.count,
 										 sizeof(struct gre_host*), gre_host_check_srcconflict);
 	if(srcConflict != NULL){
 		log_msg(NORMAL, "Tunnel conflict: must not have two tunnels to the same destination"
 				" where one is bound to a local address and the other is not.\n");
 		exit(1);
 	}
-	
+
 	/* make space if necessary */
 	if(gHosts.count == gHosts.len){
 		gHosts.len = (gHosts.len * 2 + 1);
@@ -159,25 +159,25 @@ struct gre_host* gre_host_for_name(char* dest, char* bind){
 		bind_addrlen = bind_addrinfo->ai_addrlen;
 	}
 
-    /* Look up the destination address */
-    memset(&hints, 0x0, sizeof(hints));
-    hints.ai_socktype = AF_INET; /* ipv4 only */
-    struct addrinfo* res;
+	/* Look up the destination address */
+	memset(&hints, 0x0, sizeof(hints));
+	hints.ai_socktype = AF_INET; /* ipv4 only */
+	struct addrinfo* res;
 
-    /* Assume that the first struct returned is appropriate, as we're
+	/* Assume that the first struct returned is appropriate, as we're
 	   asking for ipv4 only (TODO: ipv6) */
-    int r = getaddrinfo(dest, NULL, &hints, &res);
-    if(r != 0) {
+	int r = getaddrinfo(dest, NULL, &hints, &res);
+	if(r != 0) {
 		log_msg(NORMAL, "DNS resolution of \"%s\" failed: %s\n",
 				dest,
 				r == EAI_SYSTEM ? strerror(errno) : gai_strerror(r));
 		exit(1);
-    }
+	}
 
 	/* look up the host by address and return */
 	struct gre_host* host = gre_host_for_addr(res->ai_addr, res->ai_addrlen,
 											  bind_addr, bind_addrlen);
-    freeaddrinfo(res);
+	freeaddrinfo(res);
 	if(bind_addrinfo) freeaddrinfo(bind_addrinfo);
 	return host;
 }
@@ -247,17 +247,17 @@ void gre_host_open_socket(struct gre_host* host){
 		log_msg(DEBUG, "Opened raw socket %d for host %s\n", host->socket_fd, host_str);
 	}
 
-    /* Do we want to consider setting the buffer sizes to the BDP,
+	/* Do we want to consider setting the buffer sizes to the BDP,
 	   remembering that we are a tunnel, and therefore the connections
 	   going over us will be independently buffered. Real question is
 	   whether adjusting buffers here allows us to usefully employ
 	   knowledge about the capacity/rtt of our link.
 	*/
-    /* int optval=262144; */
-	/*     if(setsockopt (raw_socket, SOL_SOCKET, SO_RCVBUF, &optval, sizeof (optval))) */
-	/* 	perror("setsockopt(RCVBUF)"); */
-	/*     if(setsockopt (raw_socket, SOL_SOCKET, SO_SNDBUF, &optval, sizeof (optval))) */
-	/* 	perror("setsockopt(SNDBUF)"); */
+	/* int optval=262144; */
+	/* if(setsockopt (raw_socket, SOL_SOCKET, SO_RCVBUF, &optval, sizeof (optval))) */
+	/* perror("setsockopt(RCVBUF)"); */
+	/* if(setsockopt (raw_socket, SOL_SOCKET, SO_SNDBUF, &optval, sizeof (optval))) */
+	/* perror("setsockopt(SNDBUF)"); */
 
 	if(host->bind_addr_len > 0){
 		if(bind(host->socket_fd, (const struct sockaddr*) &host->bind_addr, host->bind_addr_len) == -1){

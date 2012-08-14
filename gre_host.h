@@ -14,14 +14,14 @@ struct tunnel_list {
 	size_t count;
 };
 
-struct gre_host_list { 
-	struct gre_host** hosts; 
+struct gre_host_list {
+	struct gre_host** hosts;
 	size_t len;
-	size_t count; 
+	size_t count;
 };
 
 struct gre_host{
-    struct sockaddr_storage addr;
+	struct sockaddr_storage addr;
 	int addr_len;
 
 	struct sockaddr_storage bind_addr;

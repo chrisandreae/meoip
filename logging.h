@@ -4,7 +4,7 @@
 // verbosity levels
 enum log_level {
 	NORMAL=0,
-	VERBOSE, 
+	VERBOSE,
 	DEBUG,
 	PACKETS
 };

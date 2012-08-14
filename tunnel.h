@@ -7,12 +7,12 @@
 struct gre_host;
 
 struct tunnel{
-    char 		     name[IFNAMSIZ];
-    unsigned short   id;
+	char 			 name[IFNAMSIZ];
+	unsigned short   id;
 	struct gre_host* dest;
 
-    int              tun_fd;
-    struct ifreq	 ifr;
+	int              tun_fd;
+	struct ifreq	 ifr;
 };
 
 #if defined(__linux__)
