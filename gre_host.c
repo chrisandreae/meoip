@@ -267,11 +267,17 @@ void gre_host_open_socket(struct gre_host* host){
 			exit(1);
 		}
 	}
-	if(connect(host->socket_fd, (const struct sockaddr*) &host->addr, host->addr_len) == -1){
-		const char* const err_str = strerror(errno);
-		GRE_HOST_LOG_STR(host_str, DEBUG, host);
-		log_msg(NORMAL, "Error connecting GRE socket for host %s: %s\n", host_str, err_str);
-		exit(1);
+	while(connect(host->socket_fd, (const struct sockaddr*) &host->addr, host->addr_len) == -1){
+		if(errno == ENETUNREACH){
+			log_msg(VERBOSE, "Can't connect() GRE socket - network is not yet available (ENETUNREACH). Waiting 1 second...\n");
+			sleep(1);
+		}
+		else{
+			const char* const err_str = strerror(errno);
+			GRE_HOST_LOG_STR(host_str, DEBUG, host);
+			log_msg(NORMAL, "Error connecting GRE socket for host %s: %s\n", host_str, err_str);
+			exit(1);
+		}
 	}
 	if(fcntl(host->socket_fd, F_SETFL, O_NONBLOCK) == -1){
 		const char* const err_str = strerror(errno);
