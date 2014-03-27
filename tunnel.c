@@ -111,7 +111,7 @@ void tunnel_open(struct tunnel *tunnel) {
 		log_msg(NORMAL, "ioctl(TAPGIFNAME) failed: %s\n", strerror(errno));
 		exit(1);
 	}
-	tunnel->ifr.ifr_name[IFNAMSIZ-1] = 0
+	tunnel->ifr.ifr_name[IFNAMSIZ-1] = 0;
 #endif
 
 	/* Set flags on new interface: requires a dummy socket for
@@ -148,7 +148,7 @@ void tunnel_close(struct tunnel* t){
 		log_msg(DEBUG, "tunnel_close - socket() failed: %s\n", strerror(errno));
 	}
 	else{
-		if (ioctl(tmpfd, SIOCIFDESTROY, t->ifr) < 0) {
+		if (ioctl(tmpfd, SIOCIFDESTROY, &t->ifr) < 0) {
 			log_msg(DEBUG, "tunnel_close - ioctl(SIOCIFDESTROY) failed: %s\n", strerror(errno));
 		}
 		close(tmpfd);
