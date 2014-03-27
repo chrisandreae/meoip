@@ -238,7 +238,7 @@ void gre_host_open_socket(struct gre_host* host){
 
 	if(host->socket_fd == -1){
 		const char* const err_str = strerror(errno);
-		GRE_HOST_LOG_STR(host_str, DEBUG, host);
+		GRE_HOST_LOG_STR(host_str, NORMAL, host);
 		log_msg(NORMAL, "Error opening GRE socket for host %s: %s\n", host_str, err_str);
 		exit(1);
 	}
@@ -262,7 +262,7 @@ void gre_host_open_socket(struct gre_host* host){
 	if(host->bind_addr_len > 0){
 		if(bind(host->socket_fd, (const struct sockaddr*) &host->bind_addr, host->bind_addr_len) == -1){
 			const char* const err_str = strerror(errno);
-			GRE_HOST_LOG_STR(host_str, DEBUG, host);
+			GRE_HOST_LOG_STR(host_str, NORMAL, host);
 			log_msg(NORMAL, "Error binding GRE socket for host %s: %s\n", host_str, err_str);
 			exit(1);
 		}
@@ -274,14 +274,14 @@ void gre_host_open_socket(struct gre_host* host){
 		}
 		else{
 			const char* const err_str = strerror(errno);
-			GRE_HOST_LOG_STR(host_str, DEBUG, host);
+			GRE_HOST_LOG_STR(host_str, NORMAL, host);
 			log_msg(NORMAL, "Error connecting GRE socket for host %s: %s\n", host_str, err_str);
 			exit(1);
 		}
 	}
 	if(fcntl(host->socket_fd, F_SETFL, O_NONBLOCK) == -1){
 		const char* const err_str = strerror(errno);
-		GRE_HOST_LOG_STR(host_str, DEBUG, host);
+		GRE_HOST_LOG_STR(host_str, NORMAL, host);
 		log_msg(NORMAL, "Could not set GRE socket non-blocking for host %s: %s\n", host_str, err_str);
 		exit(1);
 	}
