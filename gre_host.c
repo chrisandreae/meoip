@@ -13,6 +13,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
 
 struct gre_host* gre_host_alloc(){
 	struct gre_host* n = malloc(sizeof(struct gre_host));
